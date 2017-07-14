@@ -9,7 +9,6 @@ import (
 	"net/http/pprof"
 	"os"
 	"os/signal"
-	"time"
 )
 
 const maxScanTokenSize = 1024 * 1024
@@ -17,7 +16,7 @@ const maxScanTokenSize = 1024 * 1024
 var scanBuf []byte
 
 func logHandler(w http.ResponseWriter, r *http.Request) {
-	httpStart := time.Now()
+	// httpStart := time.Now()
 	w.Header().Set("Content-Type", "text/plain")
 
 	defer r.Body.Close()
@@ -28,7 +27,7 @@ func logHandler(w http.ResponseWriter, r *http.Request) {
 	for s.Scan() {
 	}
 
-	log.Println("Read time:", time.Since(httpStart))
+	// log.Println("Read time:", time.Since(httpStart))
 	if s.Err() != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		io.WriteString(w, "Read from body failed")

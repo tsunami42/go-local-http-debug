@@ -1,0 +1,2059 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="498" onload="init(evt)" viewBox="0 0 1200 498" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<defs >
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	.func_g:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	var details, searchbtn, matchedtxt, svg;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+	}
+
+	// mouse-over for info
+	function s(node) {		// show
+		info = g_to_text(node);
+		details.nodeValue = "Function: " + info;
+	}
+	function c() {			// clear
+		details.nodeValue = ' ';
+	}
+
+	// ctrl-F for search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+	})
+
+	// functions
+	function find_child(parent, name, attr) {
+		var children = parent.childNodes;
+		for (var i=0; i<children.length;i++) {
+			if (children[i].tagName == name)
+				return (attr != undefined) ? children[i].attributes[attr].value : children[i];
+		}
+		return;
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_"+attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_"+attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_"+attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes["width"].value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes["x"].value = parseFloat(r.attributes["x"].value) +3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2*12*0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		// Fit in full text width
+		if (/^ *$/.test(txt) || t.getSubStringLength(0, txt.length) < w)
+			return;
+
+		for (var x=txt.length-2; x>0; x--) {
+			if (t.getSubStringLength(0, x+2) <= w) {
+				t.textContent = txt.substring(0,x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes["x"] != undefined) {
+				orig_save(e, "x");
+				e.attributes["x"].value = (parseFloat(e.attributes["x"].value) - x - 10) * ratio + 10;
+				if(e.tagName == "text") e.attributes["x"].value = find_child(e.parentNode, "rect", "x") + 3;
+			}
+			if (e.attributes["width"] != undefined) {
+				orig_save(e, "width");
+				e.attributes["width"].value = parseFloat(e.attributes["width"].value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_child(c[i], x-10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes["x"] != undefined) {
+				orig_save(e, "x");
+				e.attributes["x"].value = 10;
+			}
+			if (e.attributes["width"] != undefined) {
+				orig_save(e, "width");
+				e.attributes["width"].value = parseInt(svg.width.baseVal.value) - (10*2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr["width"].value);
+		var xmin = parseFloat(attr["x"].value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr["y"].value);
+		var ratio = (svg.width.baseVal.value - 2*10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		var unzoombtn = document.getElementById("unzoom");
+		unzoombtn.style["opacity"] = "1.0";
+
+		var el = document.getElementsByTagName("g");
+		for(var i=0;i<el.length;i++){
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a["x"].value);
+			var ew = parseFloat(a["width"].value);
+			// Is it an ancestor
+			if (0 == 0) {
+				var upstack = parseFloat(a["y"].value) > ymin;
+			} else {
+				var upstack = parseFloat(a["y"].value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.style["opacity"] = "0.5";
+					zoom_parent(e);
+					e.onclick = function(e){unzoom(); zoom(this);};
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.style["display"] = "none";
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.style["display"] = "none";
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					e.onclick = function(e){zoom(this);};
+					update_text(e);
+				}
+			}
+		}
+	}
+	function unzoom() {
+		var unzoombtn = document.getElementById("unzoom");
+		unzoombtn.style["opacity"] = "0.0";
+
+		var el = document.getElementsByTagName("g");
+		for(i=0;i<el.length;i++) {
+			el[i].style["display"] = "block";
+			el[i].style["opacity"] = "1";
+			zoom_reset(el[i]);
+			update_text(el[i]);
+		}
+	}
+
+	// search
+	function reset_search() {
+		var el = document.getElementsByTagName("rect");
+		for (var i=0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)", "");
+			if (term != null) {
+				search(term)
+			}
+		} else {
+			reset_search();
+			searching = 0;
+			searchbtn.style["opacity"] = "0.1";
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.style["opacity"] = "0.0";
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		var re = new RegExp(term);
+		var el = document.getElementsByTagName("g");
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			if (e.attributes["class"].value != "func_g")
+				continue;
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (rect == null) {
+				// the rect might be wrapped in an anchor
+				// if nameattr href is being used
+				if (rect = find_child(e, "a")) {
+				    rect = find_child(r, "rect");
+				}
+			}
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes["width"].value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes["x"].value);
+				orig_save(rect, "fill");
+				rect.attributes["fill"].value =
+				    "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+
+		searchbtn.style["opacity"] = "1.0";
+		searchbtn.firstChild.nodeValue = "Reset Search"
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+				return a - b;
+			if (a < b || a > b)
+				return a - b;
+			return matches[b] - matches[a];
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.style["opacity"] = "1.0";
+		pct = 100 * count / maxwidth;
+		if (pct == 100)
+			pct = "100"
+		else
+			pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+	function searchover(e) {
+		searchbtn.style["opacity"] = "1.0";
+	}
+	function searchout(e) {
+		if (searching) {
+			searchbtn.style["opacity"] = "1.0";
+		} else {
+			searchbtn.style["opacity"] = "0.1";
+		}
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="498.0" fill="url(#background)"  />
+<text text-anchor="middle" x="600.00" y="24" font-size="17" font-family="Verdana" fill="rgb(0,0,0)"  >Flame Graph</text>
+<text text-anchor="" x="10.00" y="481" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="details" > </text>
+<text text-anchor="" x="10.00" y="24" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="unzoom" onclick="unzoom()" style="opacity:0.0;cursor:pointer" >Reset Zoom</text>
+<text text-anchor="" x="1090.00" y="24" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="search" onmouseover="searchover()" onmouseout="searchout()" onclick="search_prompt()" style="opacity:0.1;cursor:pointer" >Search</text>
+<text text-anchor="" x="1090.00" y="481" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="matched" > </text>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.newobject (2 samples, 0.28%)</title><rect x="287.8" y="369" width="3.4" height="15.0" fill="rgb(233,145,14)" rx="2" ry="2" />
+<text text-anchor="" x="290.84" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.deferreturn (4 samples, 0.57%)</title><rect x="686.2" y="209" width="6.7" height="15.0" fill="rgb(219,201,41)" rx="2" ry="2" />
+<text text-anchor="" x="689.20" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.jmpdefer (2 samples, 0.28%)</title><rect x="63.6" y="305" width="3.3" height="15.0" fill="rgb(239,5,17)" rx="2" ry="2" />
+<text text-anchor="" x="66.56" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.unlock (1 samples, 0.14%)</title><rect x="174.0" y="321" width="1.7" height="15.0" fill="rgb(208,204,51)" rx="2" ry="2" />
+<text text-anchor="" x="177.03" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.aeshashbody (1 samples, 0.14%)</title><rect x="200.8" y="321" width="1.7" height="15.0" fill="rgb(217,178,21)" rx="2" ry="2" />
+<text text-anchor="" x="203.81" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>time.Time.Weekday (2 samples, 0.28%)</title><rect x="354.8" y="321" width="3.3" height="15.0" fill="rgb(211,213,53)" rx="2" ry="2" />
+<text text-anchor="" x="357.79" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.fastrand (1 samples, 0.14%)</title><rect x="294.5" y="369" width="1.7" height="15.0" fill="rgb(218,90,35)" rx="2" ry="2" />
+<text text-anchor="" x="297.54" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bufio.(*Writer).WriteString (1 samples, 0.14%)</title><rect x="1004.2" y="289" width="1.7" height="15.0" fill="rgb(254,23,4)" rx="2" ry="2" />
+<text text-anchor="" x="1007.21" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*pollDesc).waitRead (2 samples, 0.28%)</title><rect x="55.2" y="305" width="3.3" height="15.0" fill="rgb(237,147,16)" rx="2" ry="2" />
+<text text-anchor="" x="58.19" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>strings.Count (1 samples, 0.14%)</title><rect x="209.2" y="305" width="1.7" height="15.0" fill="rgb(253,101,47)" rx="2" ry="2" />
+<text text-anchor="" x="212.18" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sync.(*Cond).Broadcast (1 samples, 0.14%)</title><rect x="994.2" y="193" width="1.6" height="15.0" fill="rgb(216,151,11)" rx="2" ry="2" />
+<text text-anchor="" x="997.17" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>syscall.Syscall (89 samples, 12.62%)</title><rect x="697.9" y="177" width="149.0" height="15.0" fill="rgb(235,88,40)" rx="2" ry="2" />
+<text text-anchor="" x="700.91" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >syscall.Syscall</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.checkConnErrorWriter.Write (69 samples, 9.79%)</title><rect x="363.2" y="369" width="115.5" height="15.0" fill="rgb(212,170,37)" rx="2" ry="2" />
+<text text-anchor="" x="366.16" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >net/http.check..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*netFD).writeUnlock (1 samples, 0.14%)</title><rect x="371.5" y="321" width="1.7" height="15.0" fill="rgb(237,83,4)" rx="2" ry="2" />
+<text text-anchor="" x="374.53" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.jmpdefer (2 samples, 0.28%)</title><rect x="880.4" y="177" width="3.3" height="15.0" fill="rgb(243,144,28)" rx="2" ry="2" />
+<text text-anchor="" x="883.35" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*response).WriteString (4 samples, 0.57%)</title><rect x="1004.2" y="321" width="6.7" height="15.0" fill="rgb(218,206,19)" rx="2" ry="2" />
+<text text-anchor="" x="1007.21" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bufio.(*Reader).ReadSlice (2 samples, 0.28%)</title><rect x="234.3" y="305" width="3.3" height="15.0" fill="rgb(239,199,17)" rx="2" ry="2" />
+<text text-anchor="" x="237.28" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.sysmon (28 samples, 3.97%)</title><rect x="1143.1" y="401" width="46.9" height="15.0" fill="rgb(250,223,43)" rx="2" ry="2" />
+<text text-anchor="" x="1146.13" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >runt..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>context.WithCancel.func1 (8 samples, 1.13%)</title><rect x="25.1" y="401" width="13.4" height="15.0" fill="rgb(218,83,22)" rx="2" ry="2" />
+<text text-anchor="" x="28.06" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.deferreturn (1 samples, 0.14%)</title><rect x="1026.0" y="369" width="1.6" height="15.0" fill="rgb(221,114,29)" rx="2" ry="2" />
+<text text-anchor="" x="1028.97" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sync.(*Mutex).Unlock (1 samples, 0.14%)</title><rect x="846.9" y="225" width="1.7" height="15.0" fill="rgb(240,58,40)" rx="2" ry="2" />
+<text text-anchor="" x="849.88" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.runtime_pollSetDeadline (4 samples, 0.57%)</title><rect x="483.7" y="321" width="6.7" height="15.0" fill="rgb(235,74,53)" rx="2" ry="2" />
+<text text-anchor="" x="486.67" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.memmove (1 samples, 0.14%)</title><rect x="954.0" y="225" width="1.7" height="15.0" fill="rgb(236,204,34)" rx="2" ry="2" />
+<text text-anchor="" x="957.00" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*conn).readRequest (161 samples, 22.84%)</title><rect x="40.1" y="401" width="269.5" height="15.0" fill="rgb(245,201,27)" rx="2" ry="2" />
+<text text-anchor="" x="43.13" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >net/http.(*conn).readRequest</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.newobject (6 samples, 0.85%)</title><rect x="277.8" y="369" width="10.0" height="15.0" fill="rgb(205,111,32)" rx="2" ry="2" />
+<text text-anchor="" x="280.80" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.casgstatus (2 samples, 0.28%)</title><rect x="152.3" y="225" width="3.3" height="15.0" fill="rgb(227,43,44)" rx="2" ry="2" />
+<text text-anchor="" x="155.27" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*netFD).setReadDeadline (2 samples, 0.28%)</title><rect x="172.4" y="369" width="3.3" height="15.0" fill="rgb(213,190,20)" rx="2" ry="2" />
+<text text-anchor="" x="175.35" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.newproc (4 samples, 0.57%)</title><rect x="661.1" y="257" width="6.7" height="15.0" fill="rgb(238,93,30)" rx="2" ry="2" />
+<text text-anchor="" x="664.09" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.systemstack (1 samples, 0.14%)</title><rect x="155.6" y="225" width="1.7" height="15.0" fill="rgb(241,213,45)" rx="2" ry="2" />
+<text text-anchor="" x="158.62" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*connReader).lock (2 samples, 0.28%)</title><rect x="160.6" y="337" width="3.4" height="15.0" fill="rgb(242,13,2)" rx="2" ry="2" />
+<text text-anchor="" x="163.64" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.runtimeNano (1 samples, 0.14%)</title><rect x="652.7" y="209" width="1.7" height="15.0" fill="rgb(226,37,21)" rx="2" ry="2" />
+<text text-anchor="" x="655.72" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.execute (1 samples, 0.14%)</title><rect x="1057.8" y="385" width="1.6" height="15.0" fill="rgb(250,216,45)" rx="2" ry="2" />
+<text text-anchor="" x="1060.77" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.mallocgc (5 samples, 0.71%)</title><rect x="1027.6" y="369" width="8.4" height="15.0" fill="rgb(218,140,17)" rx="2" ry="2" />
+<text text-anchor="" x="1030.65" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.mapiternext (1 samples, 0.14%)</title><rect x="338.1" y="305" width="1.6" height="15.0" fill="rgb(220,192,22)" rx="2" ry="2" />
+<text text-anchor="" x="341.06" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.nanotime (1 samples, 0.14%)</title><rect x="1071.2" y="369" width="1.6" height="15.0" fill="rgb(211,193,50)" rx="2" ry="2" />
+<text text-anchor="" x="1074.16" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*OpError).Timeout (1 samples, 0.14%)</title><rect x="1019.3" y="401" width="1.7" height="15.0" fill="rgb(225,42,47)" rx="2" ry="2" />
+<text text-anchor="" x="1022.28" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bufio.(*Reader).Peek (1 samples, 0.14%)</title><rect x="232.6" y="337" width="1.7" height="15.0" fill="rgb(244,102,30)" rx="2" ry="2" />
+<text text-anchor="" x="235.61" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*fdMutex).rwlock (1 samples, 0.14%)</title><rect x="53.5" y="289" width="1.7" height="15.0" fill="rgb(227,18,49)" rx="2" ry="2" />
+<text text-anchor="" x="56.52" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>strings.TrimFunc (1 samples, 0.14%)</title><rect x="210.9" y="321" width="1.6" height="15.0" fill="rgb(205,45,38)" rx="2" ry="2" />
+<text text-anchor="" x="213.85" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.readgstatus (1 samples, 0.14%)</title><rect x="56.9" y="225" width="1.6" height="15.0" fill="rgb(208,65,45)" rx="2" ry="2" />
+<text text-anchor="" x="59.87" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>time.absDate (1 samples, 0.14%)</title><rect x="353.1" y="289" width="1.7" height="15.0" fill="rgb(245,83,35)" rx="2" ry="2" />
+<text text-anchor="" x="356.12" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.setDeadlineImpl (1 samples, 0.14%)</title><rect x="38.5" y="369" width="1.6" height="15.0" fill="rgb(221,123,46)" rx="2" ry="2" />
+<text text-anchor="" x="41.45" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sync.(*Cond).Broadcast (3 samples, 0.43%)</title><rect x="1037.7" y="401" width="5.0" height="15.0" fill="rgb(244,54,26)" rx="2" ry="2" />
+<text text-anchor="" x="1040.69" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.mapaccess2_fast64 (1 samples, 0.14%)</title><rect x="359.8" y="321" width="1.7" height="15.0" fill="rgb(232,208,19)" rx="2" ry="2" />
+<text text-anchor="" x="362.82" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.exitsyscall (1 samples, 0.14%)</title><rect x="477.0" y="273" width="1.7" height="15.0" fill="rgb(230,204,48)" rx="2" ry="2" />
+<text text-anchor="" x="479.98" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.setDeadlineImpl (6 samples, 0.85%)</title><rect x="480.3" y="337" width="10.1" height="15.0" fill="rgb(238,66,7)" rx="2" ry="2" />
+<text text-anchor="" x="483.33" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.newobject (1 samples, 0.14%)</title><rect x="302.9" y="385" width="1.7" height="15.0" fill="rgb(209,160,4)" rx="2" ry="2" />
+<text text-anchor="" x="305.91" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.heapBitsSetType (1 samples, 0.14%)</title><rect x="274.5" y="305" width="1.6" height="15.0" fill="rgb(238,91,23)" rx="2" ry="2" />
+<text text-anchor="" x="277.45" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*body).Close (1 samples, 0.14%)</title><rect x="478.7" y="385" width="1.6" height="15.0" fill="rgb(247,213,23)" rx="2" ry="2" />
+<text text-anchor="" x="481.65" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/textproto.TrimString (1 samples, 0.14%)</title><rect x="339.7" y="321" width="1.7" height="15.0" fill="rgb(230,91,45)" rx="2" ry="2" />
+<text text-anchor="" x="342.73" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.mallocgc (2 samples, 0.28%)</title><rect x="251.0" y="337" width="3.4" height="15.0" fill="rgb(250,183,11)" rx="2" ry="2" />
+<text text-anchor="" x="254.02" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.newarray (1 samples, 0.14%)</title><rect x="1009.2" y="241" width="1.7" height="15.0" fill="rgb(246,15,5)" rx="2" ry="2" />
+<text text-anchor="" x="1012.23" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.findrunnable (47 samples, 6.67%)</title><rect x="1059.4" y="385" width="78.7" height="15.0" fill="rgb(237,130,19)" rx="2" ry="2" />
+<text text-anchor="" x="1062.45" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >runtime.f..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.newobject (1 samples, 0.14%)</title><rect x="249.3" y="337" width="1.7" height="15.0" fill="rgb(206,214,50)" rx="2" ry="2" />
+<text text-anchor="" x="252.35" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.(*mheap).allocSpanLocked (1 samples, 0.14%)</title><rect x="282.8" y="273" width="1.7" height="15.0" fill="rgb(240,87,32)" rx="2" ry="2" />
+<text text-anchor="" x="285.82" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.indexbytebody (74 samples, 10.50%)</title><rect x="520.5" y="305" width="123.9" height="15.0" fill="rgb(235,54,53)" rx="2" ry="2" />
+<text text-anchor="" x="523.50" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >runtime.indexby..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/textproto.(*Reader).ReadMIMEHeader (25 samples, 3.55%)</title><rect x="225.9" y="369" width="41.9" height="15.0" fill="rgb(253,26,17)" rx="2" ry="2" />
+<text text-anchor="" x="228.91" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >net..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.rawstringtmp (1 samples, 0.14%)</title><rect x="266.1" y="337" width="1.7" height="15.0" fill="rgb(246,28,42)" rx="2" ry="2" />
+<text text-anchor="" x="269.09" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*response).finishRequest (111 samples, 15.74%)</title><rect x="311.3" y="401" width="185.8" height="15.0" fill="rgb(233,92,14)" rx="2" ry="2" />
+<text text-anchor="" x="314.28" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >net/http.(*response).fin..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.heapBitsSetType (1 samples, 0.14%)</title><rect x="284.5" y="337" width="1.7" height="15.0" fill="rgb(253,187,23)" rx="2" ry="2" />
+<text text-anchor="" x="287.50" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.typedmemclr (1 samples, 0.14%)</title><rect x="292.9" y="369" width="1.6" height="15.0" fill="rgb(240,222,38)" rx="2" ry="2" />
+<text text-anchor="" x="295.87" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.runtime_pollWait (1 samples, 0.14%)</title><rect x="682.9" y="177" width="1.6" height="15.0" fill="rgb(225,221,29)" rx="2" ry="2" />
+<text text-anchor="" x="685.85" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/url.shouldEscape (1 samples, 0.14%)</title><rect x="269.4" y="305" width="1.7" height="15.0" fill="rgb(216,143,37)" rx="2" ry="2" />
+<text text-anchor="" x="272.43" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>io.ReadFull (59 samples, 8.37%)</title><rect x="856.9" y="273" width="98.8" height="15.0" fill="rgb(218,115,2)" rx="2" ry="2" />
+<text text-anchor="" x="859.92" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >io.ReadFull</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*connReader).unlock (1 samples, 0.14%)</title><rect x="846.9" y="241" width="1.7" height="15.0" fill="rgb(243,223,28)" rx="2" ry="2" />
+<text text-anchor="" x="849.88" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>strings.(*Replacer).Replace (3 samples, 0.43%)</title><rect x="344.8" y="321" width="5.0" height="15.0" fill="rgb(207,113,30)" rx="2" ry="2" />
+<text text-anchor="" x="347.75" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.mapassign (1 samples, 0.14%)</title><rect x="1009.2" y="257" width="1.7" height="15.0" fill="rgb(253,0,15)" rx="2" ry="2" />
+<text text-anchor="" x="1012.23" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.stopm (1 samples, 0.14%)</title><rect x="1136.4" y="369" width="1.7" height="15.0" fill="rgb(228,138,46)" rx="2" ry="2" />
+<text text-anchor="" x="1139.44" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.netpoll (36 samples, 5.11%)</title><rect x="1072.8" y="369" width="60.3" height="15.0" fill="rgb(231,150,10)" rx="2" ry="2" />
+<text text-anchor="" x="1075.84" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >runtim..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.runqget (3 samples, 0.43%)</title><rect x="1138.1" y="385" width="5.0" height="15.0" fill="rgb(212,75,2)" rx="2" ry="2" />
+<text text-anchor="" x="1141.11" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*ServeMux).Handler (3 samples, 0.43%)</title><rect x="497.1" y="369" width="5.0" height="15.0" fill="rgb(228,83,39)" rx="2" ry="2" />
+<text text-anchor="" x="500.06" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.notewakeup (1 samples, 0.14%)</title><rect x="949.0" y="65" width="1.7" height="15.0" fill="rgb(248,116,2)" rx="2" ry="2" />
+<text text-anchor="" x="951.98" y="75.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.reentersyscall (4 samples, 0.57%)</title><rect x="150.6" y="241" width="6.7" height="15.0" fill="rgb(223,191,47)" rx="2" ry="2" />
+<text text-anchor="" x="153.60" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*response).write (4 samples, 0.57%)</title><rect x="1004.2" y="305" width="6.7" height="15.0" fill="rgb(252,151,39)" rx="2" ry="2" />
+<text text-anchor="" x="1007.21" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.deferproc (1 samples, 0.14%)</title><rect x="1017.6" y="337" width="1.7" height="15.0" fill="rgb(222,219,42)" rx="2" ry="2" />
+<text text-anchor="" x="1020.60" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.aeshashstr (1 samples, 0.14%)</title><rect x="264.4" y="337" width="1.7" height="15.0" fill="rgb(240,209,43)" rx="2" ry="2" />
+<text text-anchor="" x="267.41" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>unicode/utf8.DecodeLastRuneInString (1 samples, 0.14%)</title><rect x="210.9" y="273" width="1.6" height="15.0" fill="rgb(250,2,41)" rx="2" ry="2" />
+<text text-anchor="" x="213.85" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http/internal.readChunkLine (23 samples, 3.26%)</title><rect x="960.7" y="257" width="38.5" height="15.0" fill="rgb(252,89,44)" rx="2" ry="2" />
+<text text-anchor="" x="963.70" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >net..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*body).readLocked (213 samples, 30.21%)</title><rect x="644.4" y="305" width="356.5" height="15.0" fill="rgb(237,200,50)" rx="2" ry="2" />
+<text text-anchor="" x="647.35" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >net/http.(*body).readLocked</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.deferreturn (3 samples, 0.43%)</title><rect x="58.5" y="305" width="5.1" height="15.0" fill="rgb(226,223,16)" rx="2" ry="2" />
+<text text-anchor="" x="61.54" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*connReader).(net/http.startBackgroundRead)-fm (10 samples, 1.42%)</title><rect x="651.0" y="289" width="16.8" height="15.0" fill="rgb(240,125,22)" rx="2" ry="2" />
+<text text-anchor="" x="654.05" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*conn).Read (99 samples, 14.04%)</title><rect x="681.2" y="241" width="165.7" height="15.0" fill="rgb(210,36,21)" rx="2" ry="2" />
+<text text-anchor="" x="684.18" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >net.(*conn).Read</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.newTextprotoReader (2 samples, 0.28%)</title><rect x="189.1" y="369" width="3.3" height="15.0" fill="rgb(245,93,15)" rx="2" ry="2" />
+<text text-anchor="" x="192.09" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.readRequest (64 samples, 9.08%)</title><rect x="180.7" y="385" width="107.1" height="15.0" fill="rgb(228,147,15)" rx="2" ry="2" />
+<text text-anchor="" x="183.72" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >net/http.read..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*conn).serve (596 samples, 84.54%)</title><rect x="21.7" y="417" width="997.6" height="15.0" fill="rgb(237,82,7)" rx="2" ry="2" />
+<text text-anchor="" x="24.72" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >net/http.(*conn).serve</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.memmove (4 samples, 0.57%)</title><rect x="850.2" y="257" width="6.7" height="15.0" fill="rgb(235,188,38)" rx="2" ry="2" />
+<text text-anchor="" x="853.23" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/url.(*URL).setPath (2 samples, 0.28%)</title><rect x="269.4" y="337" width="3.4" height="15.0" fill="rgb(220,0,47)" rx="2" ry="2" />
+<text text-anchor="" x="272.43" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*connReader).Read (68 samples, 9.65%)</title><rect x="50.2" y="353" width="113.8" height="15.0" fill="rgb(231,43,25)" rx="2" ry="2" />
+<text text-anchor="" x="53.17" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >net/http.(*con..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.goready.func1 (2 samples, 0.28%)</title><rect x="1039.4" y="321" width="3.3" height="15.0" fill="rgb(254,4,21)" rx="2" ry="2" />
+<text text-anchor="" x="1042.36" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*conn).SetReadDeadline (6 samples, 0.85%)</title><rect x="480.3" y="369" width="10.1" height="15.0" fill="rgb(218,102,47)" rx="2" ry="2" />
+<text text-anchor="" x="483.33" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.assertI2I2 (1 samples, 0.14%)</title><rect x="1036.0" y="401" width="1.7" height="15.0" fill="rgb(220,104,10)" rx="2" ry="2" />
+<text text-anchor="" x="1039.01" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.(*mheap).alloc.func1 (1 samples, 0.14%)</title><rect x="282.8" y="305" width="1.7" height="15.0" fill="rgb(241,68,32)" rx="2" ry="2" />
+<text text-anchor="" x="285.82" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.futexwakeup (1 samples, 0.14%)</title><rect x="949.0" y="49" width="1.7" height="15.0" fill="rgb(212,129,30)" rx="2" ry="2" />
+<text text-anchor="" x="951.98" y="59.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.deferreturn (1 samples, 0.14%)</title><rect x="1002.5" y="305" width="1.7" height="15.0" fill="rgb(222,70,13)" rx="2" ry="2" />
+<text text-anchor="" x="1005.54" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.slicebytetostring (1 samples, 0.14%)</title><rect x="246.0" y="337" width="1.7" height="15.0" fill="rgb(216,92,40)" rx="2" ry="2" />
+<text text-anchor="" x="249.00" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*conn).Write (69 samples, 9.79%)</title><rect x="363.2" y="353" width="115.5" height="15.0" fill="rgb(247,105,50)" rx="2" ry="2" />
+<text text-anchor="" x="366.16" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >net.(*conn).Wr..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.Header.clone (3 samples, 0.43%)</title><rect x="1005.9" y="273" width="5.0" height="15.0" fill="rgb(210,205,35)" rx="2" ry="2" />
+<text text-anchor="" x="1008.89" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.getcallerpc (1 samples, 0.14%)</title><rect x="148.9" y="241" width="1.7" height="15.0" fill="rgb(236,5,45)" rx="2" ry="2" />
+<text text-anchor="" x="151.92" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.setDeadlineImpl (2 samples, 0.28%)</title><rect x="172.4" y="353" width="3.3" height="15.0" fill="rgb(229,192,52)" rx="2" ry="2" />
+<text text-anchor="" x="175.35" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.runtime_pollSetDeadline (2 samples, 0.28%)</title><rect x="172.4" y="337" width="3.3" height="15.0" fill="rgb(220,184,32)" rx="2" ry="2" />
+<text text-anchor="" x="175.35" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.gentraceback (2 samples, 0.28%)</title><rect x="1046.1" y="337" width="3.3" height="15.0" fill="rgb(228,51,1)" rx="2" ry="2" />
+<text text-anchor="" x="1049.06" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.(*mcache).refill (1 samples, 0.14%)</title><rect x="1029.3" y="305" width="1.7" height="15.0" fill="rgb(226,136,11)" rx="2" ry="2" />
+<text text-anchor="" x="1032.32" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.deferproc (1 samples, 0.14%)</title><rect x="492.0" y="369" width="1.7" height="15.0" fill="rgb(220,223,30)" rx="2" ry="2" />
+<text text-anchor="" x="495.04" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sync.(*Pool).pin (1 samples, 0.14%)</title><rect x="495.4" y="353" width="1.7" height="15.0" fill="rgb(223,164,21)" rx="2" ry="2" />
+<text text-anchor="" x="498.39" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.HandlerFunc.ServeHTTP (309 samples, 43.83%)</title><rect x="502.1" y="369" width="517.2" height="15.0" fill="rgb(223,27,7)" rx="2" ry="2" />
+<text text-anchor="" x="505.09" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >net/http.HandlerFunc.ServeHTTP</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*transferReader).fixTransferEncoding (9 samples, 1.28%)</title><rect x="197.5" y="353" width="15.0" height="15.0" fill="rgb(254,154,35)" rx="2" ry="2" />
+<text text-anchor="" x="200.46" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.slicebytetostring (1 samples, 0.14%)</title><rect x="224.2" y="353" width="1.7" height="15.0" fill="rgb(244,181,10)" rx="2" ry="2" />
+<text text-anchor="" x="227.24" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.appendTime (5 samples, 0.71%)</title><rect x="349.8" y="337" width="8.3" height="15.0" fill="rgb(206,30,24)" rx="2" ry="2" />
+<text text-anchor="" x="352.77" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>syscall.Write (62 samples, 8.79%)</title><rect x="374.9" y="321" width="103.8" height="15.0" fill="rgb(217,139,50)" rx="2" ry="2" />
+<text text-anchor="" x="377.88" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >syscall.Write</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.lock (2 samples, 0.28%)</title><rect x="1042.7" y="353" width="3.4" height="15.0" fill="rgb(211,146,0)" rx="2" ry="2" />
+<text text-anchor="" x="1045.71" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.futexwakeup (1 samples, 0.14%)</title><rect x="155.6" y="177" width="1.7" height="15.0" fill="rgb(239,202,40)" rx="2" ry="2" />
+<text text-anchor="" x="158.62" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*conn).Read (65 samples, 9.22%)</title><rect x="51.8" y="337" width="108.8" height="15.0" fill="rgb(218,47,8)" rx="2" ry="2" />
+<text text-anchor="" x="54.84" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >net.(*conn).R..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.mstart (28 samples, 3.97%)</title><rect x="1143.1" y="433" width="46.9" height="15.0" fill="rgb(239,61,23)" rx="2" ry="2" />
+<text text-anchor="" x="1146.13" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >runt..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http/internal.removeChunkExtension (2 samples, 0.28%)</title><rect x="995.8" y="241" width="3.4" height="15.0" fill="rgb(230,153,22)" rx="2" ry="2" />
+<text text-anchor="" x="998.84" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sync.(*Mutex).Lock (1 samples, 0.14%)</title><rect x="950.7" y="193" width="1.6" height="15.0" fill="rgb(243,198,41)" rx="2" ry="2" />
+<text text-anchor="" x="953.65" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.systemstack (1 samples, 0.14%)</title><rect x="1029.3" y="337" width="1.7" height="15.0" fill="rgb(238,15,23)" rx="2" ry="2" />
+<text text-anchor="" x="1032.32" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.(*mheap).freeSpan.func1 (2 samples, 0.28%)</title><rect x="1042.7" y="369" width="3.4" height="15.0" fill="rgb(240,210,20)" rx="2" ry="2" />
+<text text-anchor="" x="1045.71" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/url.parse (6 samples, 0.85%)</title><rect x="267.8" y="353" width="10.0" height="15.0" fill="rgb(219,225,19)" rx="2" ry="2" />
+<text text-anchor="" x="270.76" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.newBufioWriterSize (3 samples, 0.43%)</title><rect x="175.7" y="385" width="5.0" height="15.0" fill="rgb(226,229,44)" rx="2" ry="2" />
+<text text-anchor="" x="178.70" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*connReader).lock (1 samples, 0.14%)</title><rect x="992.5" y="193" width="1.7" height="15.0" fill="rgb(232,196,39)" rx="2" ry="2" />
+<text text-anchor="" x="995.50" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.exitsyscall (2 samples, 0.28%)</title><rect x="989.1" y="113" width="3.4" height="15.0" fill="rgb(218,157,2)" rx="2" ry="2" />
+<text text-anchor="" x="992.15" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.mapaccess2_faststr (1 samples, 0.14%)</title><rect x="199.1" y="337" width="1.7" height="15.0" fill="rgb(236,69,48)" rx="2" ry="2" />
+<text text-anchor="" x="202.13" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*ServeMux).handler (3 samples, 0.43%)</title><rect x="497.1" y="353" width="5.0" height="15.0" fill="rgb(250,25,16)" rx="2" ry="2" />
+<text text-anchor="" x="500.06" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.heapBitsSetType (3 samples, 0.43%)</title><rect x="1031.0" y="353" width="5.0" height="15.0" fill="rgb(222,154,44)" rx="2" ry="2" />
+<text text-anchor="" x="1033.99" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.heapBitsForObject (1 samples, 0.14%)</title><rect x="1047.7" y="273" width="1.7" height="15.0" fill="rgb(210,220,44)" rx="2" ry="2" />
+<text text-anchor="" x="1050.73" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/url.unescape (1 samples, 0.14%)</title><rect x="271.1" y="321" width="1.7" height="15.0" fill="rgb(222,223,8)" rx="2" ry="2" />
+<text text-anchor="" x="274.11" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.notewakeup (1 samples, 0.14%)</title><rect x="155.6" y="193" width="1.7" height="15.0" fill="rgb(217,153,50)" rx="2" ry="2" />
+<text text-anchor="" x="158.62" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sync.(*Pool).Get (2 samples, 0.28%)</title><rect x="189.1" y="353" width="3.3" height="15.0" fill="rgb(249,136,41)" rx="2" ry="2" />
+<text text-anchor="" x="192.09" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.newdefer (1 samples, 0.14%)</title><rect x="1000.9" y="289" width="1.6" height="15.0" fill="rgb(251,79,8)" rx="2" ry="2" />
+<text text-anchor="" x="1003.87" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.lock (2 samples, 0.28%)</title><rect x="1067.8" y="369" width="3.4" height="15.0" fill="rgb(236,199,0)" rx="2" ry="2" />
+<text text-anchor="" x="1070.82" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.extraHeader.Write (1 samples, 0.14%)</title><rect x="358.1" y="337" width="1.7" height="15.0" fill="rgb(240,69,51)" rx="2" ry="2" />
+<text text-anchor="" x="361.14" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.makemap (2 samples, 0.28%)</title><rect x="247.7" y="353" width="3.3" height="15.0" fill="rgb(253,181,8)" rx="2" ry="2" />
+<text text-anchor="" x="250.67" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.convertErr (1 samples, 0.14%)</title><rect x="878.7" y="145" width="1.7" height="15.0" fill="rgb(219,38,43)" rx="2" ry="2" />
+<text text-anchor="" x="881.68" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.newobject (5 samples, 0.71%)</title><rect x="1027.6" y="385" width="8.4" height="15.0" fill="rgb(222,210,0)" rx="2" ry="2" />
+<text text-anchor="" x="1030.65" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.nanotime (1 samples, 0.14%)</title><rect x="652.7" y="193" width="1.7" height="15.0" fill="rgb(232,50,0)" rx="2" ry="2" />
+<text text-anchor="" x="655.72" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*netFD).setReadDeadline (6 samples, 0.85%)</title><rect x="480.3" y="353" width="10.1" height="15.0" fill="rgb(250,96,31)" rx="2" ry="2" />
+<text text-anchor="" x="483.33" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.futexsleep (6 samples, 0.85%)</title><rect x="1143.1" y="353" width="10.1" height="15.0" fill="rgb(205,176,36)" rx="2" ry="2" />
+<text text-anchor="" x="1146.13" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/textproto.(*Reader).readLineSlice (2 samples, 0.28%)</title><rect x="234.3" y="337" width="3.3" height="15.0" fill="rgb(206,161,48)" rx="2" ry="2" />
+<text text-anchor="" x="237.28" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.newobject (1 samples, 0.14%)</title><rect x="274.5" y="337" width="1.6" height="15.0" fill="rgb(233,75,3)" rx="2" ry="2" />
+<text text-anchor="" x="277.45" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*fdMutex).rwlock (1 samples, 0.14%)</title><rect x="369.9" y="305" width="1.6" height="15.0" fill="rgb(231,186,37)" rx="2" ry="2" />
+<text text-anchor="" x="372.86" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>time.Time.Date (3 samples, 0.43%)</title><rect x="349.8" y="321" width="5.0" height="15.0" fill="rgb(236,178,39)" rx="2" ry="2" />
+<text text-anchor="" x="352.77" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>strings.lastIndexFunc (1 samples, 0.14%)</title><rect x="210.9" y="289" width="1.6" height="15.0" fill="rgb(219,201,0)" rx="2" ry="2" />
+<text text-anchor="" x="213.85" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.casgstatus (2 samples, 0.28%)</title><rect x="1062.8" y="369" width="3.3" height="15.0" fill="rgb(216,128,45)" rx="2" ry="2" />
+<text text-anchor="" x="1065.79" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>syscall.read (39 samples, 5.53%)</title><rect x="885.4" y="161" width="65.3" height="15.0" fill="rgb(244,54,22)" rx="2" ry="2" />
+<text text-anchor="" x="888.38" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >syscall..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*connReader).Read (17 samples, 2.41%)</title><rect x="967.4" y="209" width="28.4" height="15.0" fill="rgb(239,132,48)" rx="2" ry="2" />
+<text text-anchor="" x="970.39" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >ne..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>strconv.AppendInt (1 samples, 0.14%)</title><rect x="361.5" y="337" width="1.7" height="15.0" fill="rgb(252,218,9)" rx="2" ry="2" />
+<text text-anchor="" x="364.49" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.(*mheap).alloc_m (1 samples, 0.14%)</title><rect x="282.8" y="289" width="1.7" height="15.0" fill="rgb(238,13,46)" rx="2" ry="2" />
+<text text-anchor="" x="285.82" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.mallocgc (1 samples, 0.14%)</title><rect x="266.1" y="305" width="1.7" height="15.0" fill="rgb(247,101,15)" rx="2" ry="2" />
+<text text-anchor="" x="269.09" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.slicebytetostring (1 samples, 0.14%)</title><rect x="266.1" y="353" width="1.7" height="15.0" fill="rgb(245,102,22)" rx="2" ry="2" />
+<text text-anchor="" x="269.09" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.(*mcache).nextFree.func1 (1 samples, 0.14%)</title><rect x="1029.3" y="321" width="1.7" height="15.0" fill="rgb(226,162,32)" rx="2" ry="2" />
+<text text-anchor="" x="1032.32" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*connReader).abortPendingRead (9 samples, 1.28%)</title><rect x="480.3" y="385" width="15.1" height="15.0" fill="rgb(241,164,34)" rx="2" ry="2" />
+<text text-anchor="" x="483.33" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.mapaccess1_faststr (1 samples, 0.14%)</title><rect x="219.2" y="353" width="1.7" height="15.0" fill="rgb(235,143,52)" rx="2" ry="2" />
+<text text-anchor="" x="222.22" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.makeslice (1 samples, 0.14%)</title><rect x="197.5" y="337" width="1.6" height="15.0" fill="rgb(222,82,22)" rx="2" ry="2" />
+<text text-anchor="" x="200.46" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.entersyscall_sysmon (1 samples, 0.14%)</title><rect x="155.6" y="209" width="1.7" height="15.0" fill="rgb(212,85,5)" rx="2" ry="2" />
+<text text-anchor="" x="158.62" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.mallocgc (2 samples, 0.28%)</title><rect x="287.8" y="353" width="3.4" height="15.0" fill="rgb(228,123,10)" rx="2" ry="2" />
+<text text-anchor="" x="290.84" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*conn).Read (15 samples, 2.13%)</title><rect x="967.4" y="193" width="25.1" height="15.0" fill="rgb(251,162,52)" rx="2" ry="2" />
+<text text-anchor="" x="970.39" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >n..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>time.Now (2 samples, 0.28%)</title><rect x="657.7" y="193" width="3.4" height="15.0" fill="rgb(253,157,37)" rx="2" ry="2" />
+<text text-anchor="" x="660.74" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>time.Now (1 samples, 0.14%)</title><rect x="304.6" y="385" width="1.7" height="15.0" fill="rgb(212,109,11)" rx="2" ry="2" />
+<text text-anchor="" x="307.58" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/textproto.canonicalMIMEHeaderKey (5 samples, 0.71%)</title><rect x="239.3" y="353" width="8.4" height="15.0" fill="rgb(229,211,48)" rx="2" ry="2" />
+<text text-anchor="" x="242.30" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.unlock (1 samples, 0.14%)</title><rect x="656.1" y="193" width="1.6" height="15.0" fill="rgb(206,204,40)" rx="2" ry="2" />
+<text text-anchor="" x="659.07" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.scanstack.func1 (2 samples, 0.28%)</title><rect x="1046.1" y="321" width="3.3" height="15.0" fill="rgb(234,216,38)" rx="2" ry="2" />
+<text text-anchor="" x="1049.06" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.mallocgc (1 samples, 0.14%)</title><rect x="197.5" y="321" width="1.6" height="15.0" fill="rgb(213,174,44)" rx="2" ry="2" />
+<text text-anchor="" x="200.46" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sync.(*Pool).Get (1 samples, 0.14%)</title><rect x="179.0" y="369" width="1.7" height="15.0" fill="rgb(220,61,21)" rx="2" ry="2" />
+<text text-anchor="" x="182.05" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime._ExternalCode (7 samples, 0.99%)</title><rect x="10.0" y="417" width="11.7" height="15.0" fill="rgb(235,176,9)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.readRequest.func1 (3 samples, 0.43%)</title><rect x="192.4" y="369" width="5.1" height="15.0" fill="rgb(226,126,18)" rx="2" ry="2" />
+<text text-anchor="" x="195.44" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*Server).doKeepAlives (1 samples, 0.14%)</title><rect x="334.7" y="337" width="1.7" height="15.0" fill="rgb(232,145,27)" rx="2" ry="2" />
+<text text-anchor="" x="337.71" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.makeslice (1 samples, 0.14%)</title><rect x="177.4" y="369" width="1.6" height="15.0" fill="rgb(245,107,25)" rx="2" ry="2" />
+<text text-anchor="" x="180.38" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.mapdelete (2 samples, 0.28%)</title><rect x="200.8" y="337" width="3.4" height="15.0" fill="rgb(229,66,4)" rx="2" ry="2" />
+<text text-anchor="" x="203.81" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.park_m (53 samples, 7.52%)</title><rect x="1054.4" y="417" width="88.7" height="15.0" fill="rgb(207,204,32)" rx="2" ry="2" />
+<text text-anchor="" x="1057.43" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >runtime.pa..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*netFD).Read (98 samples, 13.90%)</title><rect x="682.9" y="225" width="164.0" height="15.0" fill="rgb(216,74,15)" rx="2" ry="2" />
+<text text-anchor="" x="685.85" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >net.(*netFD).Read</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.notetsleep_internal (6 samples, 0.85%)</title><rect x="1143.1" y="369" width="10.1" height="15.0" fill="rgb(205,220,44)" rx="2" ry="2" />
+<text text-anchor="" x="1146.13" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.mallocgc (1 samples, 0.14%)</title><rect x="170.7" y="353" width="1.7" height="15.0" fill="rgb(206,40,46)" rx="2" ry="2" />
+<text text-anchor="" x="173.68" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*atomicBool).isSet (1 samples, 0.14%)</title><rect x="336.4" y="337" width="1.7" height="15.0" fill="rgb(212,111,33)" rx="2" ry="2" />
+<text text-anchor="" x="339.38" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bufio.(*Reader).Peek (69 samples, 9.79%)</title><rect x="48.5" y="385" width="115.5" height="15.0" fill="rgb(222,2,30)" rx="2" ry="2" />
+<text text-anchor="" x="51.50" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >bufio.(*Reader..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.atomicstorep (1 samples, 0.14%)</title><rect x="487.0" y="305" width="1.7" height="15.0" fill="rgb(210,21,33)" rx="2" ry="2" />
+<text text-anchor="" x="490.02" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.indexbytebody (2 samples, 0.28%)</title><rect x="995.8" y="225" width="3.4" height="15.0" fill="rgb(232,76,5)" rx="2" ry="2" />
+<text text-anchor="" x="998.84" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>vendor/golang_org/x/net/lex/httplex.HeaderValuesContainsToken (1 samples, 0.14%)</title><rect x="220.9" y="353" width="1.7" height="15.0" fill="rgb(207,184,48)" rx="2" ry="2" />
+<text text-anchor="" x="223.89" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>strings.TrimRightFunc (1 samples, 0.14%)</title><rect x="210.9" y="305" width="1.6" height="15.0" fill="rgb(236,216,42)" rx="2" ry="2" />
+<text text-anchor="" x="213.85" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.mallocgc (5 samples, 0.71%)</title><rect x="279.5" y="353" width="8.3" height="15.0" fill="rgb(244,225,13)" rx="2" ry="2" />
+<text text-anchor="" x="282.48" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bufio.(*Writer).WriteString (1 samples, 0.14%)</title><rect x="333.0" y="337" width="1.7" height="15.0" fill="rgb(233,54,1)" rx="2" ry="2" />
+<text text-anchor="" x="336.04" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.systemstack (1 samples, 0.14%)</title><rect x="177.4" y="321" width="1.6" height="15.0" fill="rgb(216,162,1)" rx="2" ry="2" />
+<text text-anchor="" x="180.38" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>syscall.Read (13 samples, 1.84%)</title><rect x="970.7" y="161" width="21.8" height="15.0" fill="rgb(251,30,9)" rx="2" ry="2" />
+<text text-anchor="" x="973.74" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >s..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.convertErr (1 samples, 0.14%)</title><rect x="1024.3" y="337" width="1.7" height="15.0" fill="rgb(245,61,23)" rx="2" ry="2" />
+<text text-anchor="" x="1027.30" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>time.now (1 samples, 0.14%)</title><rect x="659.4" y="177" width="1.7" height="15.0" fill="rgb(243,75,36)" rx="2" ry="2" />
+<text text-anchor="" x="662.42" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.typedmemmove (1 samples, 0.14%)</title><rect x="1014.3" y="289" width="1.6" height="15.0" fill="rgb(245,37,47)" rx="2" ry="2" />
+<text text-anchor="" x="1017.26" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>time.(*Location).get (1 samples, 0.14%)</title><rect x="351.4" y="273" width="1.7" height="15.0" fill="rgb(212,7,18)" rx="2" ry="2" />
+<text text-anchor="" x="354.45" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.ParseHTTPVersion (2 samples, 0.28%)</title><rect x="185.7" y="369" width="3.4" height="15.0" fill="rgb(225,48,20)" rx="2" ry="2" />
+<text text-anchor="" x="188.74" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bufio.(*Reader).fill (18 samples, 2.55%)</title><rect x="965.7" y="225" width="30.1" height="15.0" fill="rgb(231,224,9)" rx="2" ry="2" />
+<text text-anchor="" x="968.72" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >bu..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*response).WriteHeader (3 samples, 0.43%)</title><rect x="1005.9" y="289" width="5.0" height="15.0" fill="rgb(205,122,15)" rx="2" ry="2" />
+<text text-anchor="" x="1008.89" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.mallocgc (1 samples, 0.14%)</title><rect x="1009.2" y="225" width="1.7" height="15.0" fill="rgb(228,44,14)" rx="2" ry="2" />
+<text text-anchor="" x="1012.23" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.epollwait (26 samples, 3.69%)</title><rect x="1081.2" y="353" width="43.5" height="15.0" fill="rgb(231,59,3)" rx="2" ry="2" />
+<text text-anchor="" x="1084.21" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >runt..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.lock (1 samples, 0.14%)</title><rect x="36.8" y="353" width="1.7" height="15.0" fill="rgb(207,206,50)" rx="2" ry="2" />
+<text text-anchor="" x="39.78" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bufio.(*Reader).Read (57 samples, 8.09%)</title><rect x="860.3" y="241" width="95.4" height="15.0" fill="rgb(242,176,8)" rx="2" ry="2" />
+<text text-anchor="" x="863.27" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >bufio.(*Rea..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.duffcopy (2 samples, 0.28%)</title><rect x="341.4" y="321" width="3.4" height="15.0" fill="rgb(223,134,31)" rx="2" ry="2" />
+<text text-anchor="" x="344.40" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>main.logHandler (309 samples, 43.83%)</title><rect x="502.1" y="353" width="517.2" height="15.0" fill="rgb(216,191,16)" rx="2" ry="2" />
+<text text-anchor="" x="505.09" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >main.logHandler</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.gcAssistAlloc1 (1 samples, 0.14%)</title><rect x="177.4" y="289" width="1.6" height="15.0" fill="rgb(250,205,34)" rx="2" ry="2" />
+<text text-anchor="" x="180.38" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*conn).Read (46 samples, 6.52%)</title><rect x="873.7" y="209" width="77.0" height="15.0" fill="rgb(232,184,52)" rx="2" ry="2" />
+<text text-anchor="" x="876.66" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >net.(*co..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.mallocgc (1 samples, 0.14%)</title><rect x="215.9" y="337" width="1.6" height="15.0" fill="rgb(210,154,7)" rx="2" ry="2" />
+<text text-anchor="" x="218.87" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>io.ReadAtLeast (58 samples, 8.23%)</title><rect x="858.6" y="257" width="97.1" height="15.0" fill="rgb(227,85,45)" rx="2" ry="2" />
+<text text-anchor="" x="861.60" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >io.ReadAtLe..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.entersyscall_sysmon (1 samples, 0.14%)</title><rect x="949.0" y="81" width="1.7" height="15.0" fill="rgb(212,63,54)" rx="2" ry="2" />
+<text text-anchor="" x="951.98" y="91.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.scanobject (1 samples, 0.14%)</title><rect x="177.4" y="257" width="1.6" height="15.0" fill="rgb(239,46,54)" rx="2" ry="2" />
+<text text-anchor="" x="180.38" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.futex (6 samples, 0.85%)</title><rect x="1143.1" y="337" width="10.1" height="15.0" fill="rgb(253,5,36)" rx="2" ry="2" />
+<text text-anchor="" x="1146.13" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.gfget (2 samples, 0.28%)</title><rect x="662.8" y="193" width="3.3" height="15.0" fill="rgb(217,10,13)" rx="2" ry="2" />
+<text text-anchor="" x="665.77" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.mapdelete (6 samples, 0.85%)</title><rect x="25.1" y="353" width="10.0" height="15.0" fill="rgb(219,25,36)" rx="2" ry="2" />
+<text text-anchor="" x="28.06" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.acquirep (1 samples, 0.14%)</title><rect x="1061.1" y="369" width="1.7" height="15.0" fill="rgb(219,29,21)" rx="2" ry="2" />
+<text text-anchor="" x="1064.12" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.scanframeworker (2 samples, 0.28%)</title><rect x="1046.1" y="305" width="3.3" height="15.0" fill="rgb(241,149,22)" rx="2" ry="2" />
+<text text-anchor="" x="1049.06" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bufio.(*Scanner).Scan (296 samples, 41.99%)</title><rect x="508.8" y="337" width="495.4" height="15.0" fill="rgb(215,36,28)" rx="2" ry="2" />
+<text text-anchor="" x="511.78" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >bufio.(*Scanner).Scan</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>syscall.Syscall (54 samples, 7.66%)</title><rect x="70.3" y="273" width="90.3" height="15.0" fill="rgb(236,98,19)" rx="2" ry="2" />
+<text text-anchor="" x="73.26" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >syscall.Sy..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.usleep (22 samples, 3.12%)</title><rect x="1153.2" y="385" width="36.8" height="15.0" fill="rgb(254,172,21)" rx="2" ry="2" />
+<text text-anchor="" x="1156.18" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.systemstack (4 samples, 0.57%)</title><rect x="661.1" y="241" width="6.7" height="15.0" fill="rgb(230,80,44)" rx="2" ry="2" />
+<text text-anchor="" x="664.09" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.memeqbody (1 samples, 0.14%)</title><rect x="199.1" y="321" width="1.7" height="15.0" fill="rgb(226,92,22)" rx="2" ry="2" />
+<text text-anchor="" x="202.13" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.ifaceeq (1 samples, 0.14%)</title><rect x="999.2" y="289" width="1.7" height="15.0" fill="rgb(225,10,26)" rx="2" ry="2" />
+<text text-anchor="" x="1002.19" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.mapiternext (2 samples, 0.28%)</title><rect x="299.6" y="385" width="3.3" height="15.0" fill="rgb(225,197,9)" rx="2" ry="2" />
+<text text-anchor="" x="302.56" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>vendor/golang_org/x/net/lex/httplex.ValidHeaderFieldValue (2 samples, 0.28%)</title><rect x="306.3" y="385" width="3.3" height="15.0" fill="rgb(253,133,13)" rx="2" ry="2" />
+<text text-anchor="" x="309.26" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.mapassign (7 samples, 0.99%)</title><rect x="254.4" y="353" width="11.7" height="15.0" fill="rgb(213,216,13)" rx="2" ry="2" />
+<text text-anchor="" x="257.37" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>time.Time.date (2 samples, 0.28%)</title><rect x="351.4" y="305" width="3.4" height="15.0" fill="rgb(220,162,29)" rx="2" ry="2" />
+<text text-anchor="" x="354.45" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*netFD).Read (64 samples, 9.08%)</title><rect x="53.5" y="321" width="107.1" height="15.0" fill="rgb(229,201,5)" rx="2" ry="2" />
+<text text-anchor="" x="56.52" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >net.(*netFD)...</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>strings.genSplit (4 samples, 0.57%)</title><rect x="204.2" y="321" width="6.7" height="15.0" fill="rgb(213,111,15)" rx="2" ry="2" />
+<text text-anchor="" x="207.16" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.gcAssistAlloc (1 samples, 0.14%)</title><rect x="177.4" y="337" width="1.6" height="15.0" fill="rgb(224,195,36)" rx="2" ry="2" />
+<text text-anchor="" x="180.38" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.makeslice (2 samples, 0.28%)</title><rect x="251.0" y="353" width="3.4" height="15.0" fill="rgb(242,175,11)" rx="2" ry="2" />
+<text text-anchor="" x="254.02" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/textproto.CanonicalMIMEHeaderKey (1 samples, 0.14%)</title><rect x="1010.9" y="305" width="1.7" height="15.0" fill="rgb(220,139,17)" rx="2" ry="2" />
+<text text-anchor="" x="1013.91" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.newproc1 (4 samples, 0.57%)</title><rect x="661.1" y="209" width="6.7" height="15.0" fill="rgb(244,175,43)" rx="2" ry="2" />
+<text text-anchor="" x="664.09" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.markroot.func1 (3 samples, 0.43%)</title><rect x="1046.1" y="385" width="5.0" height="15.0" fill="rgb(224,65,24)" rx="2" ry="2" />
+<text text-anchor="" x="1049.06" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.goready (2 samples, 0.28%)</title><rect x="1039.4" y="353" width="3.3" height="15.0" fill="rgb(241,175,10)" rx="2" ry="2" />
+<text text-anchor="" x="1042.36" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.exitsyscallfast (1 samples, 0.14%)</title><rect x="477.0" y="257" width="1.7" height="15.0" fill="rgb(228,161,53)" rx="2" ry="2" />
+<text text-anchor="" x="479.98" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.exitsyscallfast (1 samples, 0.14%)</title><rect x="990.8" y="97" width="1.7" height="15.0" fill="rgb(235,154,9)" rx="2" ry="2" />
+<text text-anchor="" x="993.82" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.memmove (1 samples, 0.14%)</title><rect x="1004.2" y="273" width="1.7" height="15.0" fill="rgb(210,60,31)" rx="2" ry="2" />
+<text text-anchor="" x="1007.21" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>strings.Map (1 samples, 0.14%)</title><rect x="276.1" y="321" width="1.7" height="15.0" fill="rgb(252,86,17)" rx="2" ry="2" />
+<text text-anchor="" x="279.13" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.serverHandler.ServeHTTP (312 samples, 44.26%)</title><rect x="497.1" y="401" width="522.2" height="15.0" fill="rgb(232,212,33)" rx="2" ry="2" />
+<text text-anchor="" x="500.06" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >net/http.serverHandler.ServeHTTP</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>context.propagateCancel (2 samples, 0.28%)</title><rect x="164.0" y="369" width="3.3" height="15.0" fill="rgb(231,80,15)" rx="2" ry="2" />
+<text text-anchor="" x="166.99" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.memclrNoHeapPointers (1 samples, 0.14%)</title><rect x="286.2" y="337" width="1.6" height="15.0" fill="rgb(215,111,50)" rx="2" ry="2" />
+<text text-anchor="" x="289.17" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>strings.(*byteReplacer).Replace (2 samples, 0.28%)</title><rect x="346.4" y="305" width="3.4" height="15.0" fill="rgb(216,188,41)" rx="2" ry="2" />
+<text text-anchor="" x="349.43" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*conn).setState (1 samples, 0.14%)</title><rect x="309.6" y="401" width="1.7" height="15.0" fill="rgb(244,84,32)" rx="2" ry="2" />
+<text text-anchor="" x="312.60" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.casgstatus (1 samples, 0.14%)</title><rect x="843.5" y="145" width="1.7" height="15.0" fill="rgb(248,100,11)" rx="2" ry="2" />
+<text text-anchor="" x="846.53" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.pidleput (1 samples, 0.14%)</title><rect x="1134.8" y="369" width="1.6" height="15.0" fill="rgb(253,120,35)" rx="2" ry="2" />
+<text text-anchor="" x="1137.77" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/textproto.(*Reader).upcomingHeaderNewlines (1 samples, 0.14%)</title><rect x="237.6" y="353" width="1.7" height="15.0" fill="rgb(213,134,13)" rx="2" ry="2" />
+<text text-anchor="" x="240.63" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.tracebackdefers (1 samples, 0.14%)</title><rect x="1049.4" y="337" width="1.7" height="15.0" fill="rgb(221,212,37)" rx="2" ry="2" />
+<text text-anchor="" x="1052.40" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.mapiterinit (2 samples, 0.28%)</title><rect x="497.1" y="321" width="3.3" height="15.0" fill="rgb(249,151,9)" rx="2" ry="2" />
+<text text-anchor="" x="500.06" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.ready (1 samples, 0.14%)</title><rect x="1041.0" y="305" width="1.7" height="15.0" fill="rgb(249,111,3)" rx="2" ry="2" />
+<text text-anchor="" x="1044.04" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*netFD).setReadDeadline (5 samples, 0.71%)</title><rect x="652.7" y="241" width="8.4" height="15.0" fill="rgb(226,6,37)" rx="2" ry="2" />
+<text text-anchor="" x="655.72" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.notetsleep (6 samples, 0.85%)</title><rect x="1143.1" y="385" width="10.1" height="15.0" fill="rgb(208,137,5)" rx="2" ry="2" />
+<text text-anchor="" x="1146.13" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>syscall.write (61 samples, 8.65%)</title><rect x="376.6" y="305" width="102.1" height="15.0" fill="rgb(223,157,19)" rx="2" ry="2" />
+<text text-anchor="" x="379.55" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >syscall.write</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.exitsyscallfast_reacquired (1 samples, 0.14%)</title><rect x="477.0" y="241" width="1.7" height="15.0" fill="rgb(222,206,48)" rx="2" ry="2" />
+<text text-anchor="" x="479.98" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>strconv.formatBits (1 samples, 0.14%)</title><rect x="361.5" y="321" width="1.7" height="15.0" fill="rgb(210,90,50)" rx="2" ry="2" />
+<text text-anchor="" x="364.49" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sync.runtime_notifyListNotifyAll (1 samples, 0.14%)</title><rect x="994.2" y="177" width="1.6" height="15.0" fill="rgb(234,212,9)" rx="2" ry="2" />
+<text text-anchor="" x="997.17" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.makemap (2 samples, 0.28%)</title><rect x="1005.9" y="257" width="3.3" height="15.0" fill="rgb(252,56,4)" rx="2" ry="2" />
+<text text-anchor="" x="1008.89" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*connReader).backgroundRead (14 samples, 1.99%)</title><rect x="1019.3" y="417" width="23.4" height="15.0" fill="rgb(233,207,21)" rx="2" ry="2" />
+<text text-anchor="" x="1022.28" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >n..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.setDeadlineImpl (5 samples, 0.71%)</title><rect x="652.7" y="225" width="8.4" height="15.0" fill="rgb(219,150,49)" rx="2" ry="2" />
+<text text-anchor="" x="655.72" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.mapiternext (2 samples, 0.28%)</title><rect x="296.2" y="369" width="3.4" height="15.0" fill="rgb(224,173,39)" rx="2" ry="2" />
+<text text-anchor="" x="299.21" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.mallocgc (1 samples, 0.14%)</title><rect x="249.3" y="321" width="1.7" height="15.0" fill="rgb(211,100,48)" rx="2" ry="2" />
+<text text-anchor="" x="252.35" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>io.WriteString (4 samples, 0.57%)</title><rect x="1004.2" y="337" width="6.7" height="15.0" fill="rgb(247,132,14)" rx="2" ry="2" />
+<text text-anchor="" x="1007.21" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.deferreturn (1 samples, 0.14%)</title><rect x="373.2" y="321" width="1.7" height="15.0" fill="rgb(234,81,8)" rx="2" ry="2" />
+<text text-anchor="" x="376.21" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.typedmemclr (1 samples, 0.14%)</title><rect x="33.4" y="337" width="1.7" height="15.0" fill="rgb(240,210,41)" rx="2" ry="2" />
+<text text-anchor="" x="36.43" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.readyWithTime (3 samples, 0.43%)</title><rect x="1037.7" y="369" width="5.0" height="15.0" fill="rgb(253,47,53)" rx="2" ry="2" />
+<text text-anchor="" x="1040.69" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.gosweepone (2 samples, 0.28%)</title><rect x="1042.7" y="401" width="3.4" height="15.0" fill="rgb(229,33,12)" rx="2" ry="2" />
+<text text-anchor="" x="1045.71" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.casgstatus (1 samples, 0.14%)</title><rect x="1041.0" y="289" width="1.7" height="15.0" fill="rgb(239,90,34)" rx="2" ry="2" />
+<text text-anchor="" x="1044.04" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.memeqbody (2 samples, 0.28%)</title><rect x="185.7" y="353" width="3.4" height="15.0" fill="rgb(254,171,12)" rx="2" ry="2" />
+<text text-anchor="" x="188.74" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.futex (1 samples, 0.14%)</title><rect x="949.0" y="33" width="1.7" height="15.0" fill="rgb(205,209,43)" rx="2" ry="2" />
+<text text-anchor="" x="951.98" y="43.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.mapaccess1_faststr (2 samples, 0.28%)</title><rect x="242.7" y="337" width="3.3" height="15.0" fill="rgb(241,227,4)" rx="2" ry="2" />
+<text text-anchor="" x="245.65" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.Header.sortedKeyValues (1 samples, 0.14%)</title><rect x="338.1" y="321" width="1.6" height="15.0" fill="rgb(249,88,51)" rx="2" ry="2" />
+<text text-anchor="" x="341.06" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>context.removeChild (6 samples, 0.85%)</title><rect x="25.1" y="369" width="10.0" height="15.0" fill="rgb(205,36,41)" rx="2" ry="2" />
+<text text-anchor="" x="28.06" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*connReader).unlock (1 samples, 0.14%)</title><rect x="490.4" y="369" width="1.6" height="15.0" fill="rgb(208,59,12)" rx="2" ry="2" />
+<text text-anchor="" x="493.37" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.(*mcache).nextFree (1 samples, 0.14%)</title><rect x="282.8" y="337" width="1.7" height="15.0" fill="rgb(210,203,4)" rx="2" ry="2" />
+<text text-anchor="" x="285.82" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.getitab (1 samples, 0.14%)</title><rect x="1015.9" y="321" width="1.7" height="15.0" fill="rgb(233,121,15)" rx="2" ry="2" />
+<text text-anchor="" x="1018.93" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.strequal (1 samples, 0.14%)</title><rect x="202.5" y="321" width="1.7" height="15.0" fill="rgb(233,59,21)" rx="2" ry="2" />
+<text text-anchor="" x="205.48" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*pollDesc).waitRead (2 samples, 0.28%)</title><rect x="877.0" y="177" width="3.4" height="15.0" fill="rgb(219,182,30)" rx="2" ry="2" />
+<text text-anchor="" x="880.01" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.reentersyscall (2 samples, 0.28%)</title><rect x="947.3" y="113" width="3.4" height="15.0" fill="rgb(241,114,3)" rx="2" ry="2" />
+<text text-anchor="" x="950.30" y="123.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.Header.Set (3 samples, 0.43%)</title><rect x="1010.9" y="337" width="5.0" height="15.0" fill="rgb(205,61,32)" rx="2" ry="2" />
+<text text-anchor="" x="1013.91" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*connReader).startBackgroundRead (10 samples, 1.42%)</title><rect x="651.0" y="273" width="16.8" height="15.0" fill="rgb(227,134,12)" rx="2" ry="2" />
+<text text-anchor="" x="654.05" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.aeshashstr (1 samples, 0.14%)</title><rect x="244.3" y="321" width="1.7" height="15.0" fill="rgb(214,46,29)" rx="2" ry="2" />
+<text text-anchor="" x="247.33" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sync.runtime_notifyListNotifyAll (3 samples, 0.43%)</title><rect x="1037.7" y="385" width="5.0" height="15.0" fill="rgb(233,64,17)" rx="2" ry="2" />
+<text text-anchor="" x="1040.69" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.heapBitsSetType (1 samples, 0.14%)</title><rect x="170.7" y="337" width="1.7" height="15.0" fill="rgb(241,3,27)" rx="2" ry="2" />
+<text text-anchor="" x="173.68" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.makemap (2 samples, 0.28%)</title><rect x="287.8" y="385" width="3.4" height="15.0" fill="rgb(212,112,2)" rx="2" ry="2" />
+<text text-anchor="" x="290.84" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bufio.(*Reader).Read (108 samples, 15.32%)</title><rect x="676.2" y="273" width="180.7" height="15.0" fill="rgb(211,205,24)" rx="2" ry="2" />
+<text text-anchor="" x="679.16" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >bufio.(*Reader).Read</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*pollDesc).prepareRead (2 samples, 0.28%)</title><rect x="1022.6" y="369" width="3.4" height="15.0" fill="rgb(240,167,21)" rx="2" ry="2" />
+<text text-anchor="" x="1025.62" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.atomicstorep (1 samples, 0.14%)</title><rect x="172.4" y="321" width="1.6" height="15.0" fill="rgb(227,37,3)" rx="2" ry="2" />
+<text text-anchor="" x="175.35" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.freedefer (1 samples, 0.14%)</title><rect x="61.9" y="289" width="1.7" height="15.0" fill="rgb(216,116,13)" rx="2" ry="2" />
+<text text-anchor="" x="64.89" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*connReader).Read (52 samples, 7.38%)</title><rect x="867.0" y="225" width="87.0" height="15.0" fill="rgb(220,150,52)" rx="2" ry="2" />
+<text text-anchor="" x="869.96" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >net/http.(..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*netFD).Read (45 samples, 6.38%)</title><rect x="875.3" y="193" width="75.4" height="15.0" fill="rgb(208,147,36)" rx="2" ry="2" />
+<text text-anchor="" x="878.33" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >net.(*ne..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.mapiterinit (3 samples, 0.43%)</title><rect x="294.5" y="385" width="5.1" height="15.0" fill="rgb(207,179,15)" rx="2" ry="2" />
+<text text-anchor="" x="297.54" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>syscall.Syscall (61 samples, 8.65%)</title><rect x="376.6" y="289" width="102.1" height="15.0" fill="rgb(211,9,25)" rx="2" ry="2" />
+<text text-anchor="" x="379.55" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >syscall.Sysc..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.entersyscall (6 samples, 0.85%)</title><rect x="147.2" y="257" width="10.1" height="15.0" fill="rgb(236,172,3)" rx="2" ry="2" />
+<text text-anchor="" x="150.25" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sync.(*Cond).Wait (1 samples, 0.14%)</title><rect x="493.7" y="369" width="1.7" height="15.0" fill="rgb(250,181,44)" rx="2" ry="2" />
+<text text-anchor="" x="496.72" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.(*guintptr).cas (1 samples, 0.14%)</title><rect x="1141.5" y="369" width="1.6" height="15.0" fill="rgb(244,84,16)" rx="2" ry="2" />
+<text text-anchor="" x="1144.46" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.shouldClose (3 samples, 0.43%)</title><rect x="217.5" y="369" width="5.1" height="15.0" fill="rgb(244,1,3)" rx="2" ry="2" />
+<text text-anchor="" x="220.55" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.newobject (1 samples, 0.14%)</title><rect x="215.9" y="353" width="1.6" height="15.0" fill="rgb(245,50,43)" rx="2" ry="2" />
+<text text-anchor="" x="218.87" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sync.(*Cond).Broadcast (1 samples, 0.14%)</title><rect x="952.3" y="209" width="1.7" height="15.0" fill="rgb(223,59,27)" rx="2" ry="2" />
+<text text-anchor="" x="955.33" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.queueRescan (1 samples, 0.14%)</title><rect x="666.1" y="193" width="1.7" height="15.0" fill="rgb(229,75,0)" rx="2" ry="2" />
+<text text-anchor="" x="669.11" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*pollDesc).waitRead (1 samples, 0.14%)</title><rect x="682.9" y="209" width="1.6" height="15.0" fill="rgb(242,183,51)" rx="2" ry="2" />
+<text text-anchor="" x="685.85" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.exitsyscallfast (1 samples, 0.14%)</title><rect x="845.2" y="145" width="1.7" height="15.0" fill="rgb(244,67,49)" rx="2" ry="2" />
+<text text-anchor="" x="848.21" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*chunkWriter).Write (25 samples, 3.55%)</title><rect x="321.3" y="369" width="41.9" height="15.0" fill="rgb(211,46,5)" rx="2" ry="2" />
+<text text-anchor="" x="324.32" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >net..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bytes.IndexByte (1 samples, 0.14%)</title><rect x="225.9" y="353" width="1.7" height="15.0" fill="rgb(227,83,46)" rx="2" ry="2" />
+<text text-anchor="" x="228.91" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.schedule (52 samples, 7.38%)</title><rect x="1056.1" y="401" width="87.0" height="15.0" fill="rgb(205,126,42)" rx="2" ry="2" />
+<text text-anchor="" x="1059.10" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >runtime.sc..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.lock (1 samples, 0.14%)</title><rect x="654.4" y="193" width="1.7" height="15.0" fill="rgb(216,168,38)" rx="2" ry="2" />
+<text text-anchor="" x="657.40" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>syscall.read (13 samples, 1.84%)</title><rect x="970.7" y="145" width="21.8" height="15.0" fill="rgb(238,79,28)" rx="2" ry="2" />
+<text text-anchor="" x="973.74" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >s..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bytes.IndexByte (1 samples, 0.14%)</title><rect x="518.8" y="305" width="1.7" height="15.0" fill="rgb(236,213,48)" rx="2" ry="2" />
+<text text-anchor="" x="521.82" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.deferproc (1 samples, 0.14%)</title><rect x="1000.9" y="305" width="1.6" height="15.0" fill="rgb(231,118,0)" rx="2" ry="2" />
+<text text-anchor="" x="1003.87" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.reentersyscall (1 samples, 0.14%)</title><rect x="840.2" y="145" width="1.7" height="15.0" fill="rgb(208,38,7)" rx="2" ry="2" />
+<text text-anchor="" x="843.18" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>context.WithCancel (5 samples, 0.71%)</title><rect x="164.0" y="385" width="8.4" height="15.0" fill="rgb(218,54,32)" rx="2" ry="2" />
+<text text-anchor="" x="166.99" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>syscall.read (91 samples, 12.91%)</title><rect x="694.6" y="193" width="152.3" height="15.0" fill="rgb(250,203,31)" rx="2" ry="2" />
+<text text-anchor="" x="697.57" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >syscall.read</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.futex (1 samples, 0.14%)</title><rect x="155.6" y="161" width="1.7" height="15.0" fill="rgb(242,182,21)" rx="2" ry="2" />
+<text text-anchor="" x="158.62" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*conn).SetReadDeadline (6 samples, 0.85%)</title><rect x="651.0" y="257" width="10.1" height="15.0" fill="rgb(237,156,49)" rx="2" ry="2" />
+<text text-anchor="" x="654.05" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.scang (3 samples, 0.43%)</title><rect x="1046.1" y="369" width="5.0" height="15.0" fill="rgb(228,13,20)" rx="2" ry="2" />
+<text text-anchor="" x="1049.06" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>syscall.Syscall (39 samples, 5.53%)</title><rect x="885.4" y="145" width="65.3" height="15.0" fill="rgb(214,214,8)" rx="2" ry="2" />
+<text text-anchor="" x="888.38" y="155.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >syscall..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime._System (7 samples, 0.99%)</title><rect x="10.0" y="433" width="11.7" height="15.0" fill="rgb(224,95,51)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.runtime_pollWait (2 samples, 0.28%)</title><rect x="55.2" y="273" width="3.3" height="15.0" fill="rgb(229,33,28)" rx="2" ry="2" />
+<text text-anchor="" x="58.19" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.newdefer (1 samples, 0.14%)</title><rect x="684.5" y="193" width="1.7" height="15.0" fill="rgb(238,228,2)" rx="2" ry="2" />
+<text text-anchor="" x="687.52" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.newobject (1 samples, 0.14%)</title><rect x="1007.6" y="241" width="1.6" height="15.0" fill="rgb(224,23,39)" rx="2" ry="2" />
+<text text-anchor="" x="1010.56" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.gcBgMarkWorker (3 samples, 0.43%)</title><rect x="1046.1" y="417" width="5.0" height="15.0" fill="rgb(254,24,34)" rx="2" ry="2" />
+<text text-anchor="" x="1049.06" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*netFD).decref (1 samples, 0.14%)</title><rect x="482.0" y="321" width="1.7" height="15.0" fill="rgb(222,114,23)" rx="2" ry="2" />
+<text text-anchor="" x="485.00" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http/internal.(*chunkedReader).beginChunk (26 samples, 3.69%)</title><rect x="955.7" y="273" width="43.5" height="15.0" fill="rgb(231,161,50)" rx="2" ry="2" />
+<text text-anchor="" x="958.67" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >net/..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.deferreturn (1 samples, 0.14%)</title><rect x="969.1" y="161" width="1.6" height="15.0" fill="rgb(212,164,34)" rx="2" ry="2" />
+<text text-anchor="" x="972.06" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sync.runtime_notifyListWait (1 samples, 0.14%)</title><rect x="493.7" y="353" width="1.7" height="15.0" fill="rgb(215,124,52)" rx="2" ry="2" />
+<text text-anchor="" x="496.72" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>time.Time.abs (1 samples, 0.14%)</title><rect x="351.4" y="289" width="1.7" height="15.0" fill="rgb(228,142,27)" rx="2" ry="2" />
+<text text-anchor="" x="354.45" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.gcDrainN (1 samples, 0.14%)</title><rect x="177.4" y="273" width="1.6" height="15.0" fill="rgb(205,50,6)" rx="2" ry="2" />
+<text text-anchor="" x="180.38" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.runtime_pollSetDeadline (1 samples, 0.14%)</title><rect x="38.5" y="353" width="1.6" height="15.0" fill="rgb(233,117,26)" rx="2" ry="2" />
+<text text-anchor="" x="41.45" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bufio.(*Writer).Flush (98 samples, 13.90%)</title><rect x="314.6" y="385" width="164.1" height="15.0" fill="rgb(251,35,27)" rx="2" ry="2" />
+<text text-anchor="" x="317.62" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >bufio.(*Writer).Flush</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.netpollblock (2 samples, 0.28%)</title><rect x="55.2" y="257" width="3.3" height="15.0" fill="rgb(219,40,9)" rx="2" ry="2" />
+<text text-anchor="" x="58.19" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*TCPConn).Read (1 samples, 0.14%)</title><rect x="872.0" y="209" width="1.7" height="15.0" fill="rgb(239,30,50)" rx="2" ry="2" />
+<text text-anchor="" x="874.99" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*conn).SetReadDeadline (2 samples, 0.28%)</title><rect x="172.4" y="385" width="3.3" height="15.0" fill="rgb(227,169,28)" rx="2" ry="2" />
+<text text-anchor="" x="175.35" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.rawstringtmp (1 samples, 0.14%)</title><rect x="224.2" y="337" width="1.7" height="15.0" fill="rgb(214,108,2)" rx="2" ry="2" />
+<text text-anchor="" x="227.24" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sync.(*RWMutex).RLock (1 samples, 0.14%)</title><rect x="500.4" y="337" width="1.7" height="15.0" fill="rgb(242,69,12)" rx="2" ry="2" />
+<text text-anchor="" x="503.41" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.getitab (1 samples, 0.14%)</title><rect x="1036.0" y="385" width="1.7" height="15.0" fill="rgb(245,117,42)" rx="2" ry="2" />
+<text text-anchor="" x="1039.01" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.Header.WriteSubset (7 samples, 0.99%)</title><rect x="338.1" y="337" width="11.7" height="15.0" fill="rgb(210,32,22)" rx="2" ry="2" />
+<text text-anchor="" x="341.06" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sync.(*Mutex).Unlock (1 samples, 0.14%)</title><rect x="490.4" y="353" width="1.6" height="15.0" fill="rgb(237,218,6)" rx="2" ry="2" />
+<text text-anchor="" x="493.37" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*connReader).Read (101 samples, 14.33%)</title><rect x="681.2" y="257" width="169.0" height="15.0" fill="rgb(228,87,41)" rx="2" ry="2" />
+<text text-anchor="" x="684.18" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >net/http.(*connReader..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*netFD).setReadDeadline (1 samples, 0.14%)</title><rect x="38.5" y="385" width="1.6" height="15.0" fill="rgb(223,116,25)" rx="2" ry="2" />
+<text text-anchor="" x="41.45" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bufio.(*Reader).fill (69 samples, 9.79%)</title><rect x="48.5" y="369" width="115.5" height="15.0" fill="rgb(240,174,24)" rx="2" ry="2" />
+<text text-anchor="" x="51.50" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >bufio.(*Reader..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.getitab (1 samples, 0.14%)</title><rect x="1019.3" y="369" width="1.7" height="15.0" fill="rgb(207,7,10)" rx="2" ry="2" />
+<text text-anchor="" x="1022.28" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.duffcopy (1 samples, 0.14%)</title><rect x="61.9" y="273" width="1.7" height="15.0" fill="rgb(252,218,7)" rx="2" ry="2" />
+<text text-anchor="" x="64.89" y="283.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>syscall.Read (40 samples, 5.67%)</title><rect x="883.7" y="177" width="67.0" height="15.0" fill="rgb(219,46,44)" rx="2" ry="2" />
+<text text-anchor="" x="886.70" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >syscall..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*conn).SetReadDeadline (1 samples, 0.14%)</title><rect x="38.5" y="401" width="1.6" height="15.0" fill="rgb(229,186,27)" rx="2" ry="2" />
+<text text-anchor="" x="41.45" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.mput (1 samples, 0.14%)</title><rect x="1136.4" y="353" width="1.7" height="15.0" fill="rgb(206,228,32)" rx="2" ry="2" />
+<text text-anchor="" x="1139.44" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.goexit (615 samples, 87.23%)</title><rect x="21.7" y="433" width="1029.4" height="15.0" fill="rgb(206,31,12)" rx="2" ry="2" />
+<text text-anchor="" x="24.72" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >runtime.goexit</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.casgstatus (1 samples, 0.14%)</title><rect x="661.1" y="193" width="1.7" height="15.0" fill="rgb(232,89,21)" rx="2" ry="2" />
+<text text-anchor="" x="664.09" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.newobject (3 samples, 0.43%)</title><rect x="167.3" y="369" width="5.1" height="15.0" fill="rgb(210,20,25)" rx="2" ry="2" />
+<text text-anchor="" x="170.33" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.(*mcentral).cacheSpan (1 samples, 0.14%)</title><rect x="1029.3" y="289" width="1.7" height="15.0" fill="rgb(242,184,10)" rx="2" ry="2" />
+<text text-anchor="" x="1032.32" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.casgstatus (1 samples, 0.14%)</title><rect x="947.3" y="97" width="1.7" height="15.0" fill="rgb(246,51,30)" rx="2" ry="2" />
+<text text-anchor="" x="950.30" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*connReader).lock (1 samples, 0.14%)</title><rect x="950.7" y="209" width="1.6" height="15.0" fill="rgb(235,161,20)" rx="2" ry="2" />
+<text text-anchor="" x="953.65" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.casgstatus (1 samples, 0.14%)</title><rect x="1066.1" y="353" width="1.7" height="15.0" fill="rgb(205,222,29)" rx="2" ry="2" />
+<text text-anchor="" x="1069.14" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>syscall.Read (56 samples, 7.94%)</title><rect x="66.9" y="305" width="93.7" height="15.0" fill="rgb(232,153,43)" rx="2" ry="2" />
+<text text-anchor="" x="69.91" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >syscall.Read</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>strings.Split (4 samples, 0.57%)</title><rect x="204.2" y="337" width="6.7" height="15.0" fill="rgb(248,51,31)" rx="2" ry="2" />
+<text text-anchor="" x="207.16" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/textproto.(*Reader).readContinuedLineSlice (6 samples, 0.85%)</title><rect x="227.6" y="353" width="10.0" height="15.0" fill="rgb(243,42,36)" rx="2" ry="2" />
+<text text-anchor="" x="230.59" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.checkdead (1 samples, 0.14%)</title><rect x="1136.4" y="337" width="1.7" height="15.0" fill="rgb(216,168,23)" rx="2" ry="2" />
+<text text-anchor="" x="1139.44" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*chunkWriter).writeHeader (24 samples, 3.40%)</title><rect x="323.0" y="353" width="40.2" height="15.0" fill="rgb(241,187,11)" rx="2" ry="2" />
+<text text-anchor="" x="325.99" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >net..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.newproc.func1 (4 samples, 0.57%)</title><rect x="661.1" y="225" width="6.7" height="15.0" fill="rgb(220,165,36)" rx="2" ry="2" />
+<text text-anchor="" x="664.09" y="235.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*netFD).readLock (1 samples, 0.14%)</title><rect x="53.5" y="305" width="1.7" height="15.0" fill="rgb(239,165,45)" rx="2" ry="2" />
+<text text-anchor="" x="56.52" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*netFD).writeLock (1 samples, 0.14%)</title><rect x="369.9" y="321" width="1.6" height="15.0" fill="rgb(236,84,21)" rx="2" ry="2" />
+<text text-anchor="" x="372.86" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*ServeMux).match (2 samples, 0.28%)</title><rect x="497.1" y="337" width="3.3" height="15.0" fill="rgb(235,142,47)" rx="2" ry="2" />
+<text text-anchor="" x="500.06" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*netFD).readUnlock (1 samples, 0.14%)</title><rect x="875.3" y="177" width="1.7" height="15.0" fill="rgb(250,67,19)" rx="2" ry="2" />
+<text text-anchor="" x="878.33" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.(*mcache).nextFree (1 samples, 0.14%)</title><rect x="1029.3" y="353" width="1.7" height="15.0" fill="rgb(242,197,23)" rx="2" ry="2" />
+<text text-anchor="" x="1032.32" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>all (705 samples, 100%)</title><rect x="10.0" y="449" width="1180.0" height="15.0" fill="rgb(254,14,33)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="459.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.bulkBarrierPreWrite (1 samples, 0.14%)</title><rect x="33.4" y="321" width="1.7" height="15.0" fill="rgb(249,79,34)" rx="2" ry="2" />
+<text text-anchor="" x="36.43" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.statusLine (1 samples, 0.14%)</title><rect x="359.8" y="337" width="1.7" height="15.0" fill="rgb(242,158,43)" rx="2" ry="2" />
+<text text-anchor="" x="362.82" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/textproto.(*Reader).ReadLine (2 samples, 0.28%)</title><rect x="222.6" y="369" width="3.3" height="15.0" fill="rgb(233,47,53)" rx="2" ry="2" />
+<text text-anchor="" x="225.57" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sync.(*Pool).Put (1 samples, 0.14%)</title><rect x="495.4" y="369" width="1.7" height="15.0" fill="rgb(208,95,7)" rx="2" ry="2" />
+<text text-anchor="" x="498.39" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bufio.(*Reader).ReadSlice (20 samples, 2.84%)</title><rect x="962.4" y="241" width="33.4" height="15.0" fill="rgb(233,218,7)" rx="2" ry="2" />
+<text text-anchor="" x="965.37" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >bu..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/url.ParseRequestURI (6 samples, 0.85%)</title><rect x="267.8" y="369" width="10.0" height="15.0" fill="rgb(216,32,19)" rx="2" ry="2" />
+<text text-anchor="" x="270.76" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.netpollunblock (1 samples, 0.14%)</title><rect x="488.7" y="305" width="1.7" height="15.0" fill="rgb(229,132,19)" rx="2" ry="2" />
+<text text-anchor="" x="491.70" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.scanblock (2 samples, 0.28%)</title><rect x="1046.1" y="289" width="3.3" height="15.0" fill="rgb(244,63,32)" rx="2" ry="2" />
+<text text-anchor="" x="1049.06" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.mapassign (2 samples, 0.28%)</title><rect x="1012.6" y="305" width="3.3" height="15.0" fill="rgb(209,173,37)" rx="2" ry="2" />
+<text text-anchor="" x="1015.58" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.systemstack (3 samples, 0.43%)</title><rect x="1046.1" y="401" width="5.0" height="15.0" fill="rgb(211,16,32)" rx="2" ry="2" />
+<text text-anchor="" x="1049.06" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.mallocgc (1 samples, 0.14%)</title><rect x="302.9" y="369" width="1.7" height="15.0" fill="rgb(214,105,11)" rx="2" ry="2" />
+<text text-anchor="" x="305.91" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*fdMutex).rwunlock (1 samples, 0.14%)</title><rect x="875.3" y="161" width="1.7" height="15.0" fill="rgb(226,80,8)" rx="2" ry="2" />
+<text text-anchor="" x="878.33" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.mallocgc (1 samples, 0.14%)</title><rect x="177.4" y="353" width="1.6" height="15.0" fill="rgb(230,221,47)" rx="2" ry="2" />
+<text text-anchor="" x="180.38" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.atomicstorep (1 samples, 0.14%)</title><rect x="38.5" y="337" width="1.6" height="15.0" fill="rgb(241,136,29)" rx="2" ry="2" />
+<text text-anchor="" x="41.45" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*pollDesc).wait (1 samples, 0.14%)</title><rect x="682.9" y="193" width="1.6" height="15.0" fill="rgb(236,228,31)" rx="2" ry="2" />
+<text text-anchor="" x="685.85" y="203.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.exitsyscall (3 samples, 0.43%)</title><rect x="841.9" y="161" width="5.0" height="15.0" fill="rgb(224,31,36)" rx="2" ry="2" />
+<text text-anchor="" x="844.86" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.pidleget (1 samples, 0.14%)</title><rect x="1133.1" y="369" width="1.7" height="15.0" fill="rgb(234,76,41)" rx="2" ry="2" />
+<text text-anchor="" x="1136.09" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/textproto.MIMEHeader.Set (3 samples, 0.43%)</title><rect x="1010.9" y="321" width="5.0" height="15.0" fill="rgb(229,14,7)" rx="2" ry="2" />
+<text text-anchor="" x="1013.91" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.closechan (2 samples, 0.28%)</title><rect x="35.1" y="369" width="3.4" height="15.0" fill="rgb(251,18,23)" rx="2" ry="2" />
+<text text-anchor="" x="38.11" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.mallocgc (1 samples, 0.14%)</title><rect x="274.5" y="321" width="1.6" height="15.0" fill="rgb(233,162,25)" rx="2" ry="2" />
+<text text-anchor="" x="277.45" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.rawstring (1 samples, 0.14%)</title><rect x="266.1" y="321" width="1.7" height="15.0" fill="rgb(207,177,24)" rx="2" ry="2" />
+<text text-anchor="" x="269.09" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.entersyscall (3 samples, 0.43%)</title><rect x="945.6" y="129" width="5.1" height="15.0" fill="rgb(211,225,44)" rx="2" ry="2" />
+<text text-anchor="" x="948.63" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*ServeMux).ServeHTTP (312 samples, 44.26%)</title><rect x="497.1" y="385" width="522.2" height="15.0" fill="rgb(209,119,44)" rx="2" ry="2" />
+<text text-anchor="" x="500.06" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >net/http.(*ServeMux).ServeHTTP</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>strings.ToLower (1 samples, 0.14%)</title><rect x="276.1" y="337" width="1.7" height="15.0" fill="rgb(222,29,29)" rx="2" ry="2" />
+<text text-anchor="" x="279.13" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.netpollready (5 samples, 0.71%)</title><rect x="1124.7" y="353" width="8.4" height="15.0" fill="rgb(206,115,27)" rx="2" ry="2" />
+<text text-anchor="" x="1127.72" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.systemstack (1 samples, 0.14%)</title><rect x="949.0" y="97" width="1.7" height="15.0" fill="rgb(230,208,49)" rx="2" ry="2" />
+<text text-anchor="" x="951.98" y="107.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sync.(*Pool).pin (1 samples, 0.14%)</title><rect x="179.0" y="353" width="1.7" height="15.0" fill="rgb(214,55,43)" rx="2" ry="2" />
+<text text-anchor="" x="182.05" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.heapBitsSetType (2 samples, 0.28%)</title><rect x="251.0" y="321" width="3.4" height="15.0" fill="rgb(237,131,28)" rx="2" ry="2" />
+<text text-anchor="" x="254.02" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.injectglist (1 samples, 0.14%)</title><rect x="1066.1" y="369" width="1.7" height="15.0" fill="rgb(229,98,22)" rx="2" ry="2" />
+<text text-anchor="" x="1069.14" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.memeqbody (2 samples, 0.28%)</title><rect x="212.5" y="337" width="3.4" height="15.0" fill="rgb(233,116,21)" rx="2" ry="2" />
+<text text-anchor="" x="215.52" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bufio.ScanLines (76 samples, 10.78%)</title><rect x="517.1" y="321" width="127.3" height="15.0" fill="rgb(216,171,50)" rx="2" ry="2" />
+<text text-anchor="" x="520.15" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >bufio.ScanLines</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sync.(*Cond).Broadcast (1 samples, 0.14%)</title><rect x="848.6" y="241" width="1.6" height="15.0" fill="rgb(235,204,13)" rx="2" ry="2" />
+<text text-anchor="" x="851.55" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.return0 (1 samples, 0.14%)</title><rect x="492.0" y="353" width="1.7" height="15.0" fill="rgb(225,53,45)" rx="2" ry="2" />
+<text text-anchor="" x="495.04" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.scanstack (3 samples, 0.43%)</title><rect x="1046.1" y="353" width="5.0" height="15.0" fill="rgb(219,36,46)" rx="2" ry="2" />
+<text text-anchor="" x="1049.06" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/url.escape (1 samples, 0.14%)</title><rect x="269.4" y="321" width="1.7" height="15.0" fill="rgb(225,136,0)" rx="2" ry="2" />
+<text text-anchor="" x="272.43" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>syscall.read (55 samples, 7.80%)</title><rect x="68.6" y="289" width="92.0" height="15.0" fill="rgb(254,16,11)" rx="2" ry="2" />
+<text text-anchor="" x="71.58" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >syscall.read</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.mstart1 (28 samples, 3.97%)</title><rect x="1143.1" y="417" width="46.9" height="15.0" fill="rgb(231,53,28)" rx="2" ry="2" />
+<text text-anchor="" x="1146.13" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >runt..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.gopark (1 samples, 0.14%)</title><rect x="56.9" y="241" width="1.6" height="15.0" fill="rgb(253,109,11)" rx="2" ry="2" />
+<text text-anchor="" x="59.87" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*netFD).Write (68 samples, 9.65%)</title><rect x="364.8" y="337" width="113.9" height="15.0" fill="rgb(212,5,45)" rx="2" ry="2" />
+<text text-anchor="" x="367.84" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >net.(*netFD).W..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.systemstack (2 samples, 0.28%)</title><rect x="1042.7" y="385" width="3.4" height="15.0" fill="rgb(242,22,1)" rx="2" ry="2" />
+<text text-anchor="" x="1045.71" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*pollDesc).prepare (1 samples, 0.14%)</title><rect x="1024.3" y="353" width="1.7" height="15.0" fill="rgb(228,87,23)" rx="2" ry="2" />
+<text text-anchor="" x="1027.30" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*conn).Read (9 samples, 1.28%)</title><rect x="1021.0" y="401" width="15.0" height="15.0" fill="rgb(226,115,15)" rx="2" ry="2" />
+<text text-anchor="" x="1023.95" y="411.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http/internal.(*chunkedReader).Read (198 samples, 28.09%)</title><rect x="667.8" y="289" width="331.4" height="15.0" fill="rgb(226,18,39)" rx="2" ry="2" />
+<text text-anchor="" x="670.79" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >net/http/internal.(*chunkedReader).Read</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.convI2I (1 samples, 0.14%)</title><rect x="1015.9" y="337" width="1.7" height="15.0" fill="rgb(225,60,19)" rx="2" ry="2" />
+<text text-anchor="" x="1018.93" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.bgsweep (2 samples, 0.28%)</title><rect x="1042.7" y="417" width="3.4" height="15.0" fill="rgb(217,160,19)" rx="2" ry="2" />
+<text text-anchor="" x="1045.71" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*pollDesc).wait (2 samples, 0.28%)</title><rect x="877.0" y="161" width="3.4" height="15.0" fill="rgb(212,193,19)" rx="2" ry="2" />
+<text text-anchor="" x="880.01" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.heapBitsSetType (1 samples, 0.14%)</title><rect x="289.5" y="337" width="1.7" height="15.0" fill="rgb(237,180,37)" rx="2" ry="2" />
+<text text-anchor="" x="292.52" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>sync.(*Pool).Put (1 samples, 0.14%)</title><rect x="195.8" y="337" width="1.7" height="15.0" fill="rgb(210,123,41)" rx="2" ry="2" />
+<text text-anchor="" x="198.79" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.mcall (55 samples, 7.80%)</title><rect x="1051.1" y="433" width="92.0" height="15.0" fill="rgb(235,123,30)" rx="2" ry="2" />
+<text text-anchor="" x="1054.08" y="443.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >runtime.mcall</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/url.getscheme (1 samples, 0.14%)</title><rect x="272.8" y="337" width="1.7" height="15.0" fill="rgb(211,210,5)" rx="2" ry="2" />
+<text text-anchor="" x="275.78" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.(*body).Read (215 samples, 30.50%)</title><rect x="644.4" y="321" width="359.8" height="15.0" fill="rgb(226,183,33)" rx="2" ry="2" />
+<text text-anchor="" x="647.35" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >net/http.(*body).Read</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.exitsyscallfast (1 samples, 0.14%)</title><rect x="159.0" y="241" width="1.6" height="15.0" fill="rgb(231,68,12)" rx="2" ry="2" />
+<text text-anchor="" x="161.96" y="251.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.goexit0 (2 samples, 0.28%)</title><rect x="1051.1" y="417" width="3.3" height="15.0" fill="rgb(218,5,33)" rx="2" ry="2" />
+<text text-anchor="" x="1054.08" y="427.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.deferproc (1 samples, 0.14%)</title><rect x="684.5" y="209" width="1.7" height="15.0" fill="rgb(227,86,35)" rx="2" ry="2" />
+<text text-anchor="" x="687.52" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.putTextprotoReader (1 samples, 0.14%)</title><rect x="195.8" y="353" width="1.7" height="15.0" fill="rgb(232,226,24)" rx="2" ry="2" />
+<text text-anchor="" x="198.79" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.assertI2I2 (1 samples, 0.14%)</title><rect x="1019.3" y="385" width="1.7" height="15.0" fill="rgb(218,211,8)" rx="2" ry="2" />
+<text text-anchor="" x="1022.28" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.systemstack (2 samples, 0.28%)</title><rect x="1039.4" y="337" width="3.3" height="15.0" fill="rgb(230,58,6)" rx="2" ry="2" />
+<text text-anchor="" x="1042.36" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.acquireSudog (1 samples, 0.14%)</title><rect x="493.7" y="337" width="1.7" height="15.0" fill="rgb(208,200,50)" rx="2" ry="2" />
+<text text-anchor="" x="496.72" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.exitsyscall (2 samples, 0.28%)</title><rect x="157.3" y="257" width="3.3" height="15.0" fill="rgb(219,122,20)" rx="2" ry="2" />
+<text text-anchor="" x="160.29" y="267.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.entersyscall (1 samples, 0.14%)</title><rect x="840.2" y="161" width="1.7" height="15.0" fill="rgb(208,13,52)" rx="2" ry="2" />
+<text text-anchor="" x="843.18" y="171.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>syscall.Syscall (13 samples, 1.84%)</title><rect x="970.7" y="129" width="21.8" height="15.0" fill="rgb(250,49,8)" rx="2" ry="2" />
+<text text-anchor="" x="973.74" y="139.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >s..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.mapdelete (2 samples, 0.28%)</title><rect x="291.2" y="385" width="3.3" height="15.0" fill="rgb(233,126,29)" rx="2" ry="2" />
+<text text-anchor="" x="294.19" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.gcAssistAlloc.func1 (1 samples, 0.14%)</title><rect x="177.4" y="305" width="1.6" height="15.0" fill="rgb(240,137,51)" rx="2" ry="2" />
+<text text-anchor="" x="180.38" y="315.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*netFD).Read (3 samples, 0.43%)</title><rect x="1022.6" y="385" width="5.0" height="15.0" fill="rgb(214,87,3)" rx="2" ry="2" />
+<text text-anchor="" x="1025.62" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>bufio.(*Reader).ReadLine (2 samples, 0.28%)</title><rect x="234.3" y="321" width="3.3" height="15.0" fill="rgb(223,218,5)" rx="2" ry="2" />
+<text text-anchor="" x="237.28" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.mapassign (1 samples, 0.14%)</title><rect x="165.7" y="353" width="1.6" height="15.0" fill="rgb(206,84,14)" rx="2" ry="2" />
+<text text-anchor="" x="168.66" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.runtime_pollSetDeadline (2 samples, 0.28%)</title><rect x="654.4" y="209" width="3.3" height="15.0" fill="rgb(211,203,2)" rx="2" ry="2" />
+<text text-anchor="" x="657.40" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.systemstack (1 samples, 0.14%)</title><rect x="282.8" y="321" width="1.7" height="15.0" fill="rgb(225,201,52)" rx="2" ry="2" />
+<text text-anchor="" x="285.82" y="331.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>syscall.Read (92 samples, 13.05%)</title><rect x="692.9" y="209" width="154.0" height="15.0" fill="rgb(248,192,23)" rx="2" ry="2" />
+<text text-anchor="" x="695.89" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >syscall.Read</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.fixLength (2 samples, 0.28%)</title><rect x="212.5" y="353" width="3.4" height="15.0" fill="rgb(239,16,15)" rx="2" ry="2" />
+<text text-anchor="" x="215.52" y="363.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>strings.TrimSpace (1 samples, 0.14%)</title><rect x="210.9" y="337" width="1.6" height="15.0" fill="rgb(248,192,30)" rx="2" ry="2" />
+<text text-anchor="" x="213.85" y="347.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*pollDesc).wait (2 samples, 0.28%)</title><rect x="55.2" y="289" width="3.3" height="15.0" fill="rgb(207,23,42)" rx="2" ry="2" />
+<text text-anchor="" x="58.19" y="299.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>time.Until (2 samples, 0.28%)</title><rect x="657.7" y="209" width="3.4" height="15.0" fill="rgb(226,92,15)" rx="2" ry="2" />
+<text text-anchor="" x="660.74" y="219.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.putBufioWriter (1 samples, 0.14%)</title><rect x="495.4" y="385" width="1.7" height="15.0" fill="rgb(238,115,38)" rx="2" ry="2" />
+<text text-anchor="" x="498.39" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net.(*netFD).Read (15 samples, 2.13%)</title><rect x="967.4" y="177" width="25.1" height="15.0" fill="rgb(237,8,16)" rx="2" ry="2" />
+<text text-anchor="" x="970.39" y="187.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >n..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>net/http.readTransfer (12 samples, 1.70%)</title><rect x="197.5" y="369" width="20.0" height="15.0" fill="rgb(253,5,3)" rx="2" ry="2" />
+<text text-anchor="" x="200.46" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>context.(*cancelCtx).cancel (8 samples, 1.13%)</title><rect x="25.1" y="385" width="13.4" height="15.0" fill="rgb(230,19,50)" rx="2" ry="2" />
+<text text-anchor="" x="28.06" y="395.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>runtime.deferreturn (1 samples, 0.14%)</title><rect x="478.7" y="369" width="1.6" height="15.0" fill="rgb(238,34,2)" rx="2" ry="2" />
+<text text-anchor="" x="481.65" y="379.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+</svg>
